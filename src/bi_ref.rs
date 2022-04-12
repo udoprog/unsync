@@ -1,0 +1,66 @@
+//! A bi-cell, also known as "why the heck is this permitted?".
+//!
+//! This is a very simple reference-counted data structure who's purpose is
+//! exactly two things:
+//! * Ensure that the guarded value is not de-allocated until all live
+//!   references of [BiRef] have been dropped.
+//! * Be able to flag when any of the two references of [BiRef] have been
+//!   dropped.
+
+use std::cell::UnsafeCell;
+use std::ptr::NonNull;
+
+struct Inner<T> {
+    /// The interior value being reference counted.
+    value: UnsafeCell<T>,
+    /// How many users we currently have.
+    count: usize,
+}
+
+/// A simple `!Send` reference counted container which can be held at exactly
+/// two places.
+///
+/// The wrapped reference can be always unsafely accessed with an indication of
+/// whether both references are alive or not at the same time through
+/// [BiRef::load].
+pub struct BiRef<T> {
+    inner: NonNull<Inner<T>>,
+}
+
+impl<T> BiRef<T> {
+    /// Construct a new biRefed container.
+    pub fn new(value: T) -> (Self, Self) {
+        let inner = NonNull::from(Box::leak(Box::new(Inner {
+            value: UnsafeCell::new(value),
+            count: 2,
+        })));
+
+        (Self { inner }, Self { inner })
+    }
+
+    /// Get the interior value and indicates with a boolean if both ends of this
+    /// value are alive.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure that the reference returned by `load` is only used by
+    /// one caller at a time.
+    pub unsafe fn load(&self) -> (&mut T, bool) {
+        let inner = &mut (*self.inner.as_ptr());
+        (inner.value.get_mut(), inner.count == 2)
+    }
+}
+
+impl<T> Drop for BiRef<T> {
+    fn drop(&mut self) {
+        unsafe {
+            let inner = self.inner.as_ptr();
+            let count = (*inner).count.wrapping_sub(1);
+            (*inner).count = count;
+
+            if count == 0 {
+                let _ = Box::from_raw(inner);
+            }
+        }
+    }
+}
