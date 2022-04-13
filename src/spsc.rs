@@ -6,8 +6,8 @@
 //! This uses no buffer for messages sent, instead it relies on the sender
 //! allocating the value being received on the stack.
 //!
-//! It does however allocate internally in order to communicate flexibly between the
-//! [Sender] and [Receiver] halves.
+//! It does however allocate internally in order to communicate flexibly between
+//! the [Sender] and [Receiver] halves.
 
 use crate::bi_ref::BiRef;
 use std::error;
