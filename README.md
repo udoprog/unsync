@@ -14,6 +14,8 @@ systems like [yew].
 You can think of this as a modern replacement to the now-deprecated
 [futures::unsync] module.
 
+<br>
+
 ## Why do you want `!Send` / `!Sync` channels?
 
 Having unsynchronized channels might seem *weird* since channels are largely
@@ -43,13 +45,17 @@ someone to tap into these benefits.
 [yew]: <https://yew.rs>
 [LocalSet]: https://docs.rs/tokio/latest/tokio/task/struct.LocalSet.html
 
+<br>
+
 ## Usage
 
 Add the following to your `Cargo.toml`:
 
 ```toml
-unsync = "0.1.0"
+unsync = "0.1.1"
 ```
+
+<br>
 
 ## Examples
 
