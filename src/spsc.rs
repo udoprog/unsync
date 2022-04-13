@@ -3,21 +3,15 @@
 //! You might also know this simply as a "queue", but I'm sticking with a
 //! uniform naming scheme.
 //!
-//! This uses no buffer for messages sent, instead it relies on the sender
-//! allocating the value being received on the stack.
-//!
-//! It does however allocate internally in order to communicate flexibly between
-//! the [Sender] and [Receiver] halves.
+//! This does allocate storage internally to maintain shared state between the
+//! [Sender] and [Receiver].
 
 use crate::bi_ref::BiRef;
 use std::error;
 use std::fmt;
 use std::future::Future;
 use std::mem::replace;
-use std::mem::MaybeUninit;
 use std::pin::Pin;
-use std::ptr;
-use std::ptr::NonNull;
 use std::task::{Context, Poll, Waker};
 
 /// Error raised when sending a message over the queue.
@@ -44,9 +38,9 @@ enum State<T> {
     /// Channel is empty.
     Empty,
     /// Channel is in the process of waiting for a message.
-    Waiting(NonNull<MaybeUninit<T>>),
+    Waiting,
     /// A message has been written to the channel and is waiting to be received.
-    Sending(NonNull<MaybeUninit<T>>),
+    Sending(T),
 }
 
 /// Interior shared state.
@@ -94,7 +88,7 @@ impl<'a, T> Future for Send<'a, T> {
                 return Poll::Ready(Err(SendError(value)));
             }
 
-            let mut value = match inner.state {
+            match &inner.state {
                 State::Empty | State::Sending(..) => {
                     if !matches!(&inner.tx, Some(w) if w.will_wake(cx.waker())) {
                         inner.tx = Some(cx.waker().clone());
@@ -102,14 +96,11 @@ impl<'a, T> Future for Send<'a, T> {
 
                     return Poll::Pending;
                 }
-                State::Waiting(data) => data,
+                State::Waiting => (),
             };
 
             let to_send = this.to_send.take().expect("future already completed");
-
-            // Write the data into the reference onto the stack of the waiting task.
-            value.as_mut().write(to_send);
-            inner.state = State::Sending(value);
+            inner.state = State::Sending(to_send);
 
             if let Some(waker) = &inner.rx {
                 waker.wake_by_ref();
@@ -129,21 +120,14 @@ impl<T> Receiver<T> {
     /// Receive a message on the channel.
     pub async fn recv(&mut self) -> Option<T> {
         unsafe {
-            let mut value = MaybeUninit::uninit();
-
             let (inner, both_present) = self.inner.load();
 
             if !both_present {
                 return None;
             }
 
-            inner.state = State::Waiting(NonNull::from(&mut value));
-
-            if Recv(&self.inner).await {
-                Some(value.assume_init())
-            } else {
-                None
-            }
+            inner.state = State::Waiting;
+            Recv(&self.inner).await
         }
     }
 }
@@ -151,21 +135,22 @@ impl<T> Receiver<T> {
 struct Recv<'a, T>(&'a BiRef<Shared<T>>);
 
 impl<'a, T> Future for Recv<'a, T> {
-    type Output = bool;
+    type Output = Option<T>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         unsafe {
             let this = Pin::get_unchecked_mut(self);
             let (inner, both_present) = this.0.load();
 
-            if let State::Sending(..) = inner.state {
-                inner.state = State::Empty;
-                return Poll::Ready(true);
+            if let State::Sending(..) = &inner.state {
+                if let State::Sending(value) = replace(&mut inner.state, State::Empty) {
+                    return Poll::Ready(Some(value));
+                }
             }
 
             if !both_present {
                 inner.rx = None;
-                return Poll::Ready(false);
+                return Poll::Ready(None);
             }
 
             if !matches!(&inner.rx, Some(w) if !w.will_wake(cx.waker())) {
@@ -185,13 +170,7 @@ impl<T> Drop for Recv<'_, T> {
     fn drop(&mut self) {
         unsafe {
             let (inner, _) = self.0.load();
-
-            // Need to drop the value which is in the process of being sent,
-            // because this process will not receive it.
-            if let State::Sending(value) = replace(&mut inner.state, State::Empty) {
-                inner.state = State::Empty;
-                ptr::drop_in_place((*value.as_ptr()).as_mut_ptr());
-            }
+            inner.state = State::Empty;
         }
     }
 }
