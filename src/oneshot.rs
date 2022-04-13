@@ -47,7 +47,7 @@ impl<T> Sender<T> {
     /// Receive a message on the channel.
     pub fn send(self, value: T) -> Result<(), SendError<T>> {
         unsafe {
-            let (inner, both_present) = self.inner.load();
+            let (inner, both_present) = self.inner.get_mut_unchecked();
 
             if !both_present {
                 return Err(SendError(value));
@@ -86,7 +86,7 @@ impl<T> Future for Recv<T> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         unsafe {
             let this = Pin::get_unchecked_mut(self);
-            let (inner, both_present) = this.receiver.inner.load();
+            let (inner, both_present) = this.receiver.inner.get_mut_unchecked();
 
             if let Some(value) = inner.buf.take() {
                 return Poll::Ready(Some(value));
@@ -109,7 +109,7 @@ impl<T> Future for Recv<T> {
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
         unsafe {
-            if let Some(waker) = self.inner.load().0.waker.take() {
+            if let Some(waker) = self.inner.get_mut_unchecked().0.waker.take() {
                 waker.wake();
             }
         }
@@ -119,7 +119,7 @@ impl<T> Drop for Sender<T> {
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
         unsafe {
-            if let Some(waker) = self.inner.load().0.waker.take() {
+            if let Some(waker) = self.inner.get_mut_unchecked().0.waker.take() {
                 waker.wake();
             }
         }

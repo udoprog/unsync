@@ -6,6 +6,5 @@
 mod bi_ref;
 mod broad_ref;
 pub mod broadcast;
-pub mod fixed_broadcast;
 pub mod oneshot;
 pub mod spsc;

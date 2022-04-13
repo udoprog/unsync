@@ -111,7 +111,7 @@ impl<'a, T> Future for Send<'a, T> {
         unsafe {
             let this = Pin::get_unchecked_mut(self);
 
-            let (inner, both_present) = this.inner.load();
+            let (inner, both_present) = this.inner.get_mut_unchecked();
 
             if !both_present {
                 inner.tx = None;
@@ -160,7 +160,7 @@ impl<'a, T> Future for Recv<'a, T> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         unsafe {
             let this = Pin::get_unchecked_mut(self);
-            let (inner, both_present) = this.inner.load();
+            let (inner, both_present) = this.inner.get_mut_unchecked();
 
             if let Some(value) = inner.buf.take() {
                 return Poll::Ready(Some(value));
@@ -187,7 +187,7 @@ impl<'a, T> Future for Recv<'a, T> {
 impl<T> Drop for Recv<'_, T> {
     fn drop(&mut self) {
         unsafe {
-            let (inner, _) = self.inner.load();
+            let (inner, _) = self.inner.get_mut_unchecked();
             inner.buf = None;
         }
     }
@@ -196,7 +196,7 @@ impl<T> Drop for Recv<'_, T> {
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
         unsafe {
-            if let Some(waker) = self.inner.load().0.rx.take() {
+            if let Some(waker) = self.inner.get_mut_unchecked().0.rx.take() {
                 waker.wake();
             }
         }
@@ -206,7 +206,7 @@ impl<T> Drop for Sender<T> {
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
         unsafe {
-            if let Some(waker) = self.inner.load().0.tx.take() {
+            if let Some(waker) = self.inner.get_mut_unchecked().0.tx.take() {
                 waker.wake();
             }
         }

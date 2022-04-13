@@ -57,7 +57,7 @@ impl<T> BroadRef<T> {
     ///
     /// Caller must ensure that the reference returned by `load` is only used by
     /// one caller at a time.
-    pub unsafe fn load(&self) -> (&mut T, bool) {
+    pub unsafe fn get_mut_unchecked(&self) -> (&mut T, bool) {
         let inner = &mut (*self.inner.as_ptr());
         (inner.value.get_mut(), inner.weak != 0)
     }
