@@ -74,14 +74,17 @@ async fn test_broadcast_receiver_drop() {
     let mut sub1 = tx.subscribe();
     let mut sub2 = tx.subscribe();
 
-    let (_, s1, s2) = tokio::join!(tx.send(1), sub1.recv(), sub2.recv());
+    let (result, s1, s2) = tokio::join!(tx.send(1), sub1.recv(), sub2.recv());
     drop(sub2);
-    assert_eq!((s1, s2), (Some(1), Some(1)));
+    assert_eq!(result, 2);
+    assert_eq!(s1, Some(1));
+    assert_eq!(s2, Some(1));
 
-    let (_, s1) = tokio::join!(tx.send(2), sub1.recv());
+    let (result, s1) = tokio::join!(tx.send(2), sub1.recv());
+    assert_eq!(result, 1);
     assert_eq!(s1, Some(2));
     drop(sub1);
 
     let (send,) = tokio::join!(tx.send(2));
-    assert!(send.is_err());
+    assert_eq!(send, 0);
 }

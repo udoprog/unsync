@@ -9,24 +9,28 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
 use crate::broad_rc::{BroadRc, BroadWeak};
 
-/// Error raised when trying to [Sender::send] but there are no subscribers on
-/// the queue.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[non_exhaustive]
-pub struct SendError;
+const DEFAULT_CAPACITY: usize = 16;
 
-impl Display for SendError {
+/// Error raised when trying to [Sender::try_send] but the subscribers either do
+/// not have the necessary capacity or there are no subscribers.
+///
+/// The error includes the number of receivers that the value was delivered to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct UnderCapacity(pub usize);
+
+impl Display for UnderCapacity {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "no receivers to broadcast channel")
+        write!(f, "subscribers are under capacity")
     }
 }
 
-impl Error for SendError {}
+impl Error for UnderCapacity {}
 
 struct ReceiverState<T> {
     /// Last message id received.
@@ -35,12 +39,14 @@ struct ReceiverState<T> {
     waker: Option<Waker>,
     /// Test if the interior value is set.
     buf: VecDeque<T>,
+    /// If the received is unbounded.
+    unbounded: bool,
 }
 
 impl<T> ReceiverState<T> {
     /// Test if the current receiver is at capacity.
     fn at_capacity(&self) -> bool {
-        self.buf.capacity() == self.buf.len()
+        !self.unbounded && self.buf.capacity() == self.buf.len()
     }
 }
 
@@ -53,7 +59,7 @@ struct Shared<T> {
     /// Collection of receivers.
     receivers: slab::Slab<ReceiverState<T>>,
     /// Per-subscriber capacity to use.
-    capacity: usize,
+    capacity: Option<NonZeroUsize>,
 }
 
 /// Sender end of the channel created through [channel].
@@ -76,11 +82,32 @@ where
         unsafe {
             let (inner, _) = self.inner.get_mut_unchecked();
 
+            let (capacity, unbounded) = match inner.capacity {
+                Some(capacity) => (capacity.get(), false),
+                None => (DEFAULT_CAPACITY, true),
+            };
+
             inner.receivers.insert(ReceiverState {
                 id: inner.id,
                 waker: None,
-                buf: VecDeque::with_capacity(inner.capacity),
+                buf: VecDeque::with_capacity(capacity),
+                unbounded,
             })
+        }
+    }
+
+    /// Bump the current message ID.
+    fn bump_message_id(&mut self) {
+        // Increase the ID of messages to send.
+        unsafe {
+            let (inner, _) = self.inner.get_mut_unchecked();
+
+            inner.id = inner.id.wrapping_add(1);
+
+            // Avoid 0, since that is what receivers are initialized to.
+            if inner.id == 0 {
+                inner.id = 1;
+            }
         }
     }
 
@@ -109,7 +136,7 @@ where
     ///
     /// let (result, s1, s2) = tokio::join!(sender.send(42), sub1.recv(), sub2.recv());
     ///
-    /// assert!(result.is_ok());
+    /// assert_eq!(result, 2);
     /// assert_eq!(s1, Some(42));
     /// assert_eq!(s2, Some(42));
     ///
@@ -117,13 +144,13 @@ where
     ///
     /// let (result, s2) = tokio::join!(sender.send(84), sub2.recv());
     ///
-    /// assert!(result.is_ok());
+    /// assert_eq!(result, 1);
     /// assert_eq!(s2, Some(84));
     ///
     /// drop(sub2);
     ///
     /// let result = sender.send(126).await;
-    /// assert!(result.is_err());
+    /// assert_eq!(result, 0);
     /// # }
     /// ```
     pub fn subscribe(&mut self) -> Receiver<T> {
@@ -140,6 +167,65 @@ where
         unsafe {
             let (inner, _) = self.inner.get_mut_unchecked();
             inner.receivers.len()
+        }
+    }
+
+    /// Try to send a value to all subscribers in a non-blocking manner.
+    ///
+    /// This errors with [UnderCapacity] unless all subscribers have the
+    /// capacity to receive the value.
+    ///
+    /// On an error, the subscribers that did have the capacity to receive the
+    /// message will receive it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use unsync::broadcast;
+    ///
+    /// # #[tokio::main(flavor = "current_thread")] async fn main() {
+    /// let mut tx = broadcast::channel::<u32>(1);
+    /// let mut sub1 = tx.subscribe();
+    /// let mut sub2 = tx.subscribe();
+    ///
+    /// assert_eq!(tx.try_send(1), Ok(2));
+    /// assert_eq!(tx.try_send(2), Err(broadcast::UnderCapacity(0)));
+    ///
+    /// assert_eq!(sub2.recv().await, Some(1));
+    /// assert_eq!(tx.try_send(3), Err(broadcast::UnderCapacity(1)));
+    ///
+    /// assert_eq!(sub2.recv().await, Some(3));
+    /// # }
+    /// ```
+    pub fn try_send(&mut self, value: T) -> Result<usize, UnderCapacity> {
+        self.bump_message_id();
+
+        unsafe {
+            let (inner, any_receivers_present) = self.inner.get_mut_unchecked();
+
+            if !any_receivers_present {
+                return Ok(0);
+            }
+
+            let mut delivered = 0;
+
+            for (_, receiver) in &mut inner.receivers {
+                // Receiver buffer is at capacity.
+                if !receiver.at_capacity() {
+                    delivered += 1;
+                    receiver.buf.push_back(value.clone());
+
+                    if let Some(waker) = &receiver.waker {
+                        waker.wake_by_ref();
+                    }
+                }
+            }
+
+            if delivered == inner.receivers.len() {
+                return Ok(delivered);
+            }
+
+            Err(UnderCapacity(delivered))
         }
     }
 
@@ -161,7 +247,7 @@ where
     ///
     /// let (result, s1, s2) = tokio::join!(sender.send(42), sub1.recv(), sub2.recv());
     ///
-    /// assert!(result.is_ok());
+    /// assert_eq!(result, 2);
     /// assert_eq!(s1, Some(42));
     /// assert_eq!(s2, Some(42));
     ///
@@ -169,27 +255,17 @@ where
     ///
     /// let (result, s2) = tokio::join!(sender.send(84), sub2.recv());
     ///
-    /// assert!(result.is_ok());
+    /// assert_eq!(result, 1);
     /// assert_eq!(s2, Some(84));
     ///
     /// drop(sub2);
     ///
     /// let result = sender.send(126).await;
-    /// assert!(result.is_err());
+    /// assert_eq!(result, 0);
     /// # }
     /// ```
-    pub async fn send(&mut self, value: T) -> Result<(), SendError> {
-        // Increase the ID of messages to send.
-        unsafe {
-            let (inner, _) = self.inner.get_mut_unchecked();
-
-            inner.id = inner.id.wrapping_add(1);
-
-            // Avoid 0, since that is what receivers are initialized to.
-            if inner.id == 0 {
-                inner.id = 1;
-            }
-        }
+    pub async fn send(&mut self, value: T) -> usize {
+        self.bump_message_id();
 
         Send {
             inner: &self.inner,
@@ -209,7 +285,7 @@ impl<'a, T> Future for Send<'a, T>
 where
     T: Clone,
 {
-    type Output = Result<(), SendError>;
+    type Output = usize;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         unsafe {
@@ -218,7 +294,7 @@ where
             let (inner, any_receivers_present) = this.inner.get_mut_unchecked();
 
             if !any_receivers_present {
-                return Poll::Ready(Err(SendError));
+                return Poll::Ready(0);
             }
 
             if !matches!(&inner.sender, Some(w) if w.will_wake(cx.waker())) {
@@ -250,7 +326,7 @@ where
                 }
 
                 if delivered == inner.receivers.len() {
-                    return Poll::Ready(Ok(()));
+                    return Poll::Ready(delivered);
                 }
 
                 if any_sent {
@@ -288,7 +364,7 @@ impl<T> Receiver<T> {
     ///
     /// let (result, s1, s2) = tokio::join!(sender.send(42), sub1.recv(), sub2.recv());
     ///
-    /// assert!(result.is_ok());
+    /// assert_eq!(result, 2);
     /// assert_eq!(s1, Some(42));
     /// assert_eq!(s2, Some(42));
     ///
@@ -406,13 +482,32 @@ pub fn channel<T>(capacity: usize) -> Sender<T>
 where
     T: Clone,
 {
-    assert!(capacity > 0, "capacity cannot be 0");
+    let capacity = NonZeroUsize::new(capacity).expect("capacity cannot be 0");
 
     let inner = BroadRc::new(Shared {
         id: 0,
         sender: None,
         receivers: slab::Slab::new(),
-        capacity,
+        capacity: Some(capacity),
+    });
+
+    Sender { inner }
+}
+
+/// Setup a broadcast channel which is unbounded.
+///
+/// # Panics
+///
+/// Panics if `capacity` is specified as 0.
+pub fn unbounded<T>() -> Sender<T>
+where
+    T: Clone,
+{
+    let inner = BroadRc::new(Shared {
+        id: 0,
+        sender: None,
+        receivers: slab::Slab::new(),
+        capacity: None,
     });
 
     Sender { inner }
