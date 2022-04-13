@@ -31,7 +31,7 @@ impl<T> error::Error for SendError<T> {}
 
 /// Interior shared state.
 struct Shared<T> {
-    /// Waker to wake once sending is available.
+    /// Waker to wake once value is set.
     waker: Option<Waker>,
     /// Test if the interior value is set.
     buf: Option<T>,

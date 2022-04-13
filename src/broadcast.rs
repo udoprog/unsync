@@ -4,6 +4,7 @@
 //! [Sender] and [Receiver].
 
 use crate::broad_ref::{BroadRef, Weak};
+use std::collections::VecDeque;
 use std::error;
 use std::fmt;
 use std::future::Future;
@@ -35,7 +36,14 @@ struct ReceiverState<T> {
     /// Waker to wake once receiving is available.
     waker: Option<Waker>,
     /// Test if the interior value is set.
-    buf: Option<T>,
+    buf: VecDeque<T>,
+}
+
+impl<T> ReceiverState<T> {
+    /// Test if the current receiver is at capacity.
+    fn at_capacity(&self) -> bool {
+        self.buf.capacity() == self.buf.len()
+    }
 }
 
 /// Interior shared state.
@@ -46,6 +54,8 @@ struct Shared<T> {
     sender: Option<Waker>,
     /// Collection of receivers.
     receivers: slab::Slab<ReceiverState<T>>,
+    /// Per-subscriber capacity to use.
+    capacity: usize,
 }
 
 /// Sender end of this queue.
@@ -71,12 +81,12 @@ where
             inner.receivers.insert(ReceiverState {
                 id: inner.id,
                 waker: None,
-                buf: None,
+                buf: VecDeque::with_capacity(inner.capacity),
             })
         }
     }
 
-    /// Subscribe to the broadcast channel.
+    /// Subscribe to the broadcast channel with a buffer of size `n`.
     ///
     /// This sets up a new [Receiver] which is guaranteed to receive all updates
     /// on this broadcast channel.
@@ -161,13 +171,12 @@ where
                         continue;
                     }
 
-                    // Value is in the process of being delivered to this
-                    // receiver.
-                    if receiver.buf.is_some() {
+                    // Receiver buffer is at capacity.
+                    if receiver.at_capacity() {
                         continue;
                     }
 
-                    receiver.buf = Some(this.value.clone());
+                    receiver.buf.push_back(this.value.clone());
 
                     if let Some(waker) = &receiver.waker {
                         waker.wake_by_ref();
@@ -222,7 +231,7 @@ impl<'a, T> Future for Recv<'a, T> {
                 None => return Poll::Ready(None),
             };
 
-            if let Some(value) = receiver.buf.take() {
+            if let Some(value) = receiver.buf.pop_front() {
                 receiver.id = inner.id;
 
                 // Senders have interest once a buffer has been taken.
@@ -258,7 +267,7 @@ impl<T> Drop for Recv<'_, T> {
             let (inner, _) = self.receiver.inner.load();
 
             if let Some(receiver) = inner.receivers.get_mut(index) {
-                receiver.buf = None;
+                receiver.buf.clear();
             }
         }
     }
@@ -295,15 +304,22 @@ impl<T> Drop for Receiver<T> {
     }
 }
 
-/// Setup a broadcast channel.
-pub fn channel<T>() -> Sender<T>
+/// Setup a broadcast channel with the given per-subscriber capacity.
+///
+/// # Panics
+///
+/// Panics if `capacity` is specified as 0.
+pub fn channel<T>(capacity: usize) -> Sender<T>
 where
     T: Clone,
 {
+    assert!(capacity > 0, "capacity cannot be 0");
+
     let inner = BroadRef::new(Shared {
         id: 0,
         sender: None,
         receivers: slab::Slab::new(),
+        capacity,
     });
 
     Sender { inner }

@@ -1,13 +1,13 @@
 use tokio::task;
 use unsync::broadcast;
 
-const END: u32 = 16;
+const END: u32 = 10_000;
 
 #[tokio::test]
 async fn test_broadcast() -> Result<(), Box<dyn std::error::Error>> {
     let local = task::LocalSet::new();
 
-    let mut tx = broadcast::channel();
+    let mut tx = broadcast::channel(10);
 
     let (receivers, b) = local
         .run_until(async move {
@@ -66,7 +66,7 @@ async fn test_broadcast() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::test]
 async fn test_broadcast_receiver_drop() {
-    let mut tx = broadcast::channel();
+    let mut tx = broadcast::channel(1);
     let mut sub1 = tx.subscribe();
     let mut sub2 = tx.subscribe();
 

@@ -11,7 +11,7 @@ async fn test_spsc() -> Result<(), Box<dyn std::error::Error>> {
 
     let local = task::LocalSet::new();
 
-    let (mut tx, mut rx) = spsc::channel();
+    let (mut tx, mut rx) = spsc::channel(1);
 
     let (a, b) = local
         .run_until(async move {

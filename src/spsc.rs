@@ -7,6 +7,7 @@
 //! [Sender] and [Receiver].
 
 use crate::bi_ref::BiRef;
+use std::collections::VecDeque;
 use std::error;
 use std::fmt;
 use std::future::Future;
@@ -44,7 +45,16 @@ struct Shared<T> {
     /// Waker to wake once receiving is available.
     rx: Option<Waker>,
     /// Test if the interior value is set.
-    buf: Option<T>,
+    buf: VecDeque<T>,
+    /// Indicates if the channel is unbounded.
+    unbounded: bool,
+}
+
+impl<T> Shared<T> {
+    /// Test if the current channel is at capacity.
+    fn at_capacity(&self) -> bool {
+        !self.unbounded && self.buf.capacity() == self.buf.len()
+    }
 }
 
 /// Sender end of this queue.
@@ -53,6 +63,24 @@ pub struct Sender<T> {
 }
 
 impl<T> Sender<T> {
+    pub fn try_send(&mut self, value: T) -> Result<(), SendError<T>> {
+        unsafe {
+            let (inner, both_present) = self.inner.get_mut_unchecked();
+
+            if !both_present || inner.at_capacity() {
+                return Err(SendError(value));
+            }
+
+            inner.buf.push_back(value);
+
+            if let Some(waker) = &inner.rx {
+                waker.wake_by_ref();
+            };
+
+            Ok(())
+        }
+    }
+
     /// Send a message on the channel.
     ///
     /// # Examples
@@ -93,7 +121,7 @@ impl<T> Sender<T> {
     pub fn send(&mut self, value: T) -> Send<'_, T> {
         Send {
             inner: &self.inner,
-            to_send: Some(value),
+            value: Some(value),
         }
     }
 }
@@ -101,7 +129,7 @@ impl<T> Sender<T> {
 /// Future returned when sending a value through [Sender::send].
 pub struct Send<'a, T> {
     inner: &'a BiRef<Shared<T>>,
-    to_send: Option<T>,
+    value: Option<T>,
 }
 
 impl<'a, T> Future for Send<'a, T> {
@@ -115,11 +143,13 @@ impl<'a, T> Future for Send<'a, T> {
 
             if !both_present {
                 inner.tx = None;
-                let value = this.to_send.take().expect("future already completed");
+                let value = this.value.take().expect("future already completed");
                 return Poll::Ready(Err(SendError(value)));
             }
 
-            if inner.buf.is_some() {
+            // If we are at capacity, register ourselves as an interested waker
+            // and move on.
+            if inner.at_capacity() {
                 if !matches!(&inner.tx, Some(w) if w.will_wake(cx.waker())) {
                     inner.tx = Some(cx.waker().clone());
                 }
@@ -127,7 +157,9 @@ impl<'a, T> Future for Send<'a, T> {
                 return Poll::Pending;
             };
 
-            inner.buf = this.to_send.take();
+            inner
+                .buf
+                .push_back(this.value.take().expect("future already completed"));
 
             if let Some(waker) = &inner.rx {
                 waker.wake_by_ref();
@@ -162,7 +194,7 @@ impl<'a, T> Future for Recv<'a, T> {
             let this = Pin::get_unchecked_mut(self);
             let (inner, both_present) = this.inner.get_mut_unchecked();
 
-            if let Some(value) = inner.buf.take() {
+            if let Some(value) = inner.buf.pop_front() {
                 return Poll::Ready(Some(value));
             }
 
@@ -188,7 +220,7 @@ impl<T> Drop for Recv<'_, T> {
     fn drop(&mut self) {
         unsafe {
             let (inner, _) = self.inner.get_mut_unchecked();
-            inner.buf = None;
+            inner.buf.clear();
         }
     }
 }
@@ -213,12 +245,39 @@ impl<T> Drop for Receiver<T> {
     }
 }
 
-/// Setup a spsc channel.
-pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
+/// Setup a spsc with the given capacity.
+///
+/// Any sender is capable of sending without blocking up until `capacity` number
+/// of elements have been buffered.
+///
+/// # Panics
+///
+/// Panics if `capacity` is set to `0`.
+pub fn channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
+    assert!(capacity > 0, "capacity cannot be 0");
+
     let (a, b) = BiRef::new(Shared {
         tx: None,
         rx: None,
-        buf: None,
+        buf: VecDeque::with_capacity(capacity),
+        unbounded: false,
+    });
+
+    let rx = Receiver { inner: a };
+    let tx = Sender { inner: b };
+
+    (tx, rx)
+}
+
+/// Setup a spsc with an unbounded capacity.
+///
+/// Sending through this channel will never block.
+pub fn unbounded<T>() -> (Sender<T>, Receiver<T>) {
+    let (a, b) = BiRef::new(Shared {
+        tx: None,
+        rx: None,
+        buf: VecDeque::new(),
+        unbounded: true,
     });
 
     let rx = Receiver { inner: a };
