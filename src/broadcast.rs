@@ -1,34 +1,32 @@
-//! A dynamically-sized `!Send` broadcast channel.
+//! An unsynchronized broadcast channel with guaranteed delivery.
 //!
-//! This does allocate storage internally to maintain shared state between the
-//! [Sender] and [Receiver].
+//! This allocates storage internally to maintain shared state between the
+//! [Sender] and [Receiver]s.
 
-use crate::broad_rc::{BroadRc, BroadWeak};
 use std::collections::VecDeque;
-use std::error;
+use std::error::Error;
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
-/// Error raised when sending a message over the queue.
-#[derive(Clone, Copy)]
+use crate::broad_rc::{BroadRc, BroadWeak};
+
+/// Error raised when trying to [Sender::send] but there are no subscribers on
+/// the queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[non_exhaustive]
 pub struct SendError;
 
-impl fmt::Debug for SendError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("SendError").finish()
-    }
-}
-
-impl fmt::Display for SendError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for SendError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "no receivers to broadcast channel")
     }
 }
 
-impl error::Error for SendError {}
+impl Error for SendError {}
 
 struct ReceiverState<T> {
     /// Last message id received.
@@ -48,7 +46,7 @@ impl<T> ReceiverState<T> {
 
 /// Interior shared state.
 struct Shared<T> {
-    /// The current message ID.
+    /// The current message identifier.
     id: u64,
     /// Waker to wake once sending is available.
     sender: Option<Waker>,
@@ -86,14 +84,48 @@ where
         }
     }
 
-    /// Subscribe to the broadcast channel with a buffer of size `n`.
+    /// Subscribe to the broadcast channel.
     ///
-    /// This sets up a new [Receiver] which is guaranteed to receive all updates
-    /// on this broadcast channel.
+    /// This will set up a new buffer for the returned [Receiver] which will
+    /// allocate space for the number of elements specified when the channel was
+    /// created with [channel].
     ///
-    /// Note that this means that *slow receivers* are capable of hogging down
-    /// the entire broadcast system since they must be delievered to (or
-    /// dropped) in order for the system to make progress.
+    /// The returned [Receiver] is guaranteed to receive all updates to the
+    /// current broadcast channel, even to the extend that sending to other
+    /// receivers will be blocked. Note that this means that *slow receivers*
+    /// are capable of hogging down the entire broadcast system since they must
+    /// be delievered to (or dropped) in order for the system to make progress.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use unsync::broadcast;
+    ///
+    /// # #[tokio::main(flavor = "current_thread")] async fn main() {
+    /// let mut sender = broadcast::channel::<u32>(1);
+    ///
+    /// let mut sub1 = sender.subscribe();
+    /// let mut sub2 = sender.subscribe();
+    ///
+    /// let (result, s1, s2) = tokio::join!(sender.send(42), sub1.recv(), sub2.recv());
+    ///
+    /// assert!(result.is_ok());
+    /// assert_eq!(s1, Some(42));
+    /// assert_eq!(s2, Some(42));
+    ///
+    /// drop(sub1);
+    ///
+    /// let (result, s2) = tokio::join!(sender.send(84), sub2.recv());
+    ///
+    /// assert!(result.is_ok());
+    /// assert_eq!(s2, Some(84));
+    ///
+    /// drop(sub2);
+    ///
+    /// let result = sender.send(126).await;
+    /// assert!(result.is_err());
+    /// # }
+    /// ```
     pub fn subscribe(&mut self) -> Receiver<T> {
         let index = self.new_receiver();
 
@@ -115,6 +147,37 @@ where
     ///
     /// Note that *not driving the returned future to completion* might result
     /// in some receivers not receiving the most up-to-date value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use unsync::broadcast;
+    ///
+    /// # #[tokio::main(flavor = "current_thread")] async fn main() {
+    /// let mut sender = broadcast::channel::<u32>(1);
+    ///
+    /// let mut sub1 = sender.subscribe();
+    /// let mut sub2 = sender.subscribe();
+    ///
+    /// let (result, s1, s2) = tokio::join!(sender.send(42), sub1.recv(), sub2.recv());
+    ///
+    /// assert!(result.is_ok());
+    /// assert_eq!(s1, Some(42));
+    /// assert_eq!(s2, Some(42));
+    ///
+    /// drop(sub1);
+    ///
+    /// let (result, s2) = tokio::join!(sender.send(84), sub2.recv());
+    ///
+    /// assert!(result.is_ok());
+    /// assert_eq!(s2, Some(84));
+    ///
+    /// drop(sub2);
+    ///
+    /// let result = sender.send(126).await;
+    /// assert!(result.is_err());
+    /// # }
+    /// ```
     pub async fn send(&mut self, value: T) -> Result<(), SendError> {
         // Increase the ID of messages to send.
         unsafe {
@@ -137,7 +200,7 @@ where
 }
 
 /// Future produced by [Sender::send].
-pub struct Send<'a, T> {
+struct Send<'a, T> {
     inner: &'a BroadRc<Shared<T>>,
     value: T,
 }
@@ -208,6 +271,35 @@ pub struct Receiver<T> {
 
 impl<T> Receiver<T> {
     /// Receive a message on the channel.
+    ///
+    /// Trying to receive a message on a queue that has been closed by dropping
+    /// its [Sender] will result in `None` being returned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use unsync::broadcast;
+    ///
+    /// # #[tokio::main(flavor = "current_thread")] async fn main() {
+    /// let mut sender = broadcast::channel::<u32>(1);
+    ///
+    /// let mut sub1 = sender.subscribe();
+    /// let mut sub2 = sender.subscribe();
+    ///
+    /// let (result, s1, s2) = tokio::join!(sender.send(42), sub1.recv(), sub2.recv());
+    ///
+    /// assert!(result.is_ok());
+    /// assert_eq!(s1, Some(42));
+    /// assert_eq!(s2, Some(42));
+    ///
+    /// drop(sender);
+    ///
+    /// let (s1, s2) = tokio::join!(sub1.recv(), sub2.recv());
+    ///
+    /// assert_eq!(s1, None);
+    /// assert_eq!(s2, None);
+    /// # }
+    /// ```
     pub async fn recv(&mut self) -> Option<T> {
         Recv { receiver: self }.await
     }

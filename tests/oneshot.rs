@@ -1,13 +1,17 @@
 use tokio::task;
 use unsync::{oneshot, spsc};
 
-const END: u32 = 1_000_000;
+#[cfg(not(miri))]
+const SIZE: u32 = 100_000;
+
+#[cfg(miri)]
+const SIZE: u32 = 10;
 
 #[tokio::test]
 async fn test_oneshot() -> Result<(), Box<dyn std::error::Error>> {
     let local = task::LocalSet::new();
 
-    let (mut tx, mut rx) = spsc::channel::<oneshot::Sender<u32>>(1);
+    let (mut tx, mut rx) = spsc::channel::<oneshot::Sender<u32>>(2);
 
     let (a, b) = local
         .run_until(async move {
@@ -28,7 +32,7 @@ async fn test_oneshot() -> Result<(), Box<dyn std::error::Error>> {
             let b = task::spawn_local(async move {
                 let mut out = Vec::new();
 
-                for n in 0..END {
+                for n in 0..SIZE {
                     let (oneshot_tx, oneshot_rx) = oneshot::channel();
                     let _ = tx.send(oneshot_tx).await;
 
@@ -54,7 +58,7 @@ async fn test_oneshot() -> Result<(), Box<dyn std::error::Error>> {
     let () = a?;
     let actual = b?;
 
-    let expected = (0..END).collect::<Vec<_>>();
+    let expected = (0..SIZE).collect::<Vec<_>>();
 
     assert_eq!(actual, expected);
     Ok(())

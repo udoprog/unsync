@@ -1,37 +1,31 @@
-//! A single-producer, single-consumer `!Send` channel.
+//! An unsynchronized single-producer, single-consumer channel.
 //!
 //! You might also know this simply as a "queue", but I'm sticking with a
-//! uniform naming scheme.
+//! uniform naming scheme here so give me a break.
 //!
-//! This does allocate storage internally to maintain shared state between the
+//! This allocates storage internally to maintain shared state between the
 //! [Sender] and [Receiver].
 
-use crate::bi_rc::BiRc;
 use std::collections::VecDeque;
-use std::error;
-use std::fmt;
+use std::error::Error;
+use std::fmt::{self, Debug, Display, Formatter};
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
+use crate::bi_rc::BiRc;
+
 /// Error raised when sending a message over the queue.
-#[derive(Clone, Copy)]
-#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SendError<T>(pub T);
 
-impl<T> fmt::Debug for SendError<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("SendError").finish()
-    }
-}
-
-impl<T> fmt::Display for SendError<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl<T> Display for SendError<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "channel disconnected")
     }
 }
 
-impl<T> error::Error for SendError<T> {}
+impl<T> Error for SendError<T> where T: Debug {}
 
 /// Interior shared state.
 ///
@@ -63,7 +57,7 @@ pub struct Sender<T> {
 }
 
 impl<T> Sender<T> {
-    /// Try to send a message on the channel without blocking.
+    /// Try to send a message on this channel without blocking.
     ///
     /// This will succeed if there is sufficient capacity to send, but fail
     /// otherwise.
@@ -118,7 +112,7 @@ impl<T> Sender<T> {
         }
     }
 
-    /// Send a message on the channel.
+    /// Send a message on this channel.
     ///
     /// # Examples
     ///
@@ -163,7 +157,7 @@ impl<T> Sender<T> {
 }
 
 /// Future returned when sending a value through [Sender::send].
-pub struct Send<'a, T> {
+struct Send<'a, T> {
     inner: &'a BiRc<Shared<T>>,
     value: Option<T>,
 }
@@ -212,7 +206,41 @@ pub struct Receiver<T> {
 }
 
 impl<T> Receiver<T> {
-    /// Receive a message on the channel.
+    /// Receive a message on this channel.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::task;
+    ///
+    /// # #[tokio::main(flavor = "current_thread")] async fn main() -> Result<(), task::JoinError> {
+    /// let (mut tx, mut rx) = unsync::spsc::channel(1);
+    ///
+    /// let local = task::LocalSet::new();
+    ///
+    /// let collected = local.run_until(async move {
+    ///     let collect = task::spawn_local(async move {
+    ///         let mut out = Vec::new();
+    ///
+    ///         while let Some(value) = rx.recv().await {
+    ///             out.push(value);
+    ///         }
+    ///
+    ///         out
+    ///     });
+    ///
+    ///     let sender = task::spawn_local(async move {
+    ///         for n in 0..10 {
+    ///             let result = tx.send(n).await;
+    ///         }
+    ///     });
+    ///
+    ///     collect.await
+    /// }).await?;
+    ///
+    /// assert_eq!(collected, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    /// # Ok(()) }
+    /// ```
     pub async fn recv(&mut self) -> Option<T> {
         Recv { inner: &self.inner }.await
     }

@@ -1,33 +1,39 @@
-//! A oneshot `!Send` channel.
+//! An unsynchronized oneshot channel.
 //!
-//! This does allocate storage internally to maintain shared state between the
+//! This allocates storage internally to maintain shared state between the
 //! [Sender] and [Receiver].
 
-use crate::bi_rc::BiRc;
-use std::error;
-use std::fmt;
+use std::error::Error;
+use std::fmt::{self, Debug, Display, Formatter};
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
+use crate::bi_rc::BiRc;
+
 /// Error raised when sending a message over the queue.
-#[derive(Clone, Copy)]
-#[non_exhaustive]
+///
+/// # Examples
+///
+/// ```
+/// use unsync::oneshot;
+///
+/// # fn main() {
+/// let (tx, rx) = oneshot::channel::<u32>();
+/// drop(rx);
+/// assert_eq!(tx.send(1), Err(oneshot::SendError(1)));
+/// # }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SendError<T>(pub T);
 
-impl<T> fmt::Debug for SendError<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("SendError").finish()
-    }
-}
-
-impl<T> fmt::Display for SendError<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl<T> Display for SendError<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "channel disconnected")
     }
 }
 
-impl<T> error::Error for SendError<T> {}
+impl<T> Error for SendError<T> where T: Debug {}
 
 /// Interior shared state.
 struct Shared<T> {
@@ -38,12 +44,41 @@ struct Shared<T> {
 }
 
 /// Sender end of the channel created through [channel].
+///
+/// See [Sender::send] for how to use.
 pub struct Sender<T> {
     inner: BiRc<Shared<T>>,
 }
 
 impl<T> Sender<T> {
-    /// Send a message on this channel.
+    /// Send a message over this channel.
+    ///
+    /// # Errors
+    ///
+    /// This function raises [SendError] in case the receiver end of the channel
+    /// has been closed.
+    ///
+    /// ```
+    /// use unsync::oneshot;
+    ///
+    /// # fn main() {
+    /// let (tx, rx) = oneshot::channel::<u32>();
+    /// drop(rx);
+    /// assert_eq!(tx.send(1), Err(oneshot::SendError(1)));
+    /// # }
+    /// ```
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use unsync::oneshot;
+    ///
+    /// # #[tokio::main(flavor = "current_thread")] async fn main() {
+    /// let (tx, rx) = oneshot::channel();
+    /// assert!(tx.send(1).is_ok());
+    /// assert_eq!(rx.await, Some(1));
+    /// # }
+    /// ```
     pub fn send(self, value: T) -> Result<(), SendError<T>> {
         unsafe {
             let (inner, both_present) = self.inner.get_mut_unchecked();
@@ -64,6 +99,20 @@ impl<T> Sender<T> {
 }
 
 /// Receiver end of the channel created through [channel].
+///
+/// This implements [Future] so that it can be awaited or polled directly.
+///
+/// # Examples
+///
+/// ```
+/// use unsync::oneshot;
+///
+/// # #[tokio::main(flavor = "current_thread")] async fn main() {
+/// let (tx, rx) = oneshot::channel();
+/// assert!(tx.send(1).is_ok());
+/// assert_eq!(rx.await, Some(1));
+/// # }
+/// ```
 pub struct Receiver<T> {
     inner: BiRc<Shared<T>>,
 }
@@ -114,7 +163,19 @@ impl<T> Drop for Receiver<T> {
     }
 }
 
-/// Setup a spsc channel.
+/// Setup a oneshot channel.
+///
+/// # Examples
+///
+/// ```
+/// use unsync::oneshot;
+///
+/// # #[tokio::main(flavor = "current_thread")] async fn main() {
+/// let (tx, rx) = oneshot::channel();
+/// assert!(tx.send(1).is_ok());
+/// assert_eq!(rx.await, Some(1));
+/// # }
+/// ```
 pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
     let (a, b) = BiRc::new(Shared {
         waker: None,
