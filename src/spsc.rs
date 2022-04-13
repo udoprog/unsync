@@ -10,7 +10,6 @@ use crate::bi_ref::BiRef;
 use std::error;
 use std::fmt;
 use std::future::Future;
-use std::mem::replace;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
@@ -33,24 +32,19 @@ impl<T> fmt::Display for SendError<T> {
 
 impl<T> error::Error for SendError<T> {}
 
-#[derive(Debug, Clone, Copy)]
-enum State<T> {
-    /// Channel is empty.
-    Empty,
-    /// Channel is in the process of waiting for a message.
-    Waiting,
-    /// A message has been written to the channel and is waiting to be received.
-    Sending(T),
-}
-
 /// Interior shared state.
+///
+/// Note that we maintain two sets of waker to avoid having to clone the waker
+/// associated with the channel unecessarily through the [Waker::will_wake]
+/// optimization. This is done because it's presumed that the channel will be
+/// re-used.
 struct Shared<T> {
     /// Waker to wake once sending is available.
     tx: Option<Waker>,
     /// Waker to wake once receiving is available.
     rx: Option<Waker>,
     /// Test if the interior value is set.
-    state: State<T>,
+    buf: Option<T>,
 }
 
 /// Sender end of this queue.
@@ -59,17 +53,53 @@ pub struct Sender<T> {
 }
 
 impl<T> Sender<T> {
-    /// Receive a message on the channel.
-    pub async fn send(&mut self, value: T) -> Result<(), SendError<T>> {
+    /// Send a message on the channel.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::task;
+    ///
+    /// #[tokio::main(flavor = "current_thread")]
+    /// async fn main() -> Result<(), task::JoinError> {
+    ///     let (mut tx, mut rx) = unsync::spsc::channel();
+    ///
+    ///     let local = task::LocalSet::new();
+    ///
+    ///     let collected = local.run_until(async move {
+    ///         let collect = task::spawn_local(async move {
+    ///             let mut out = Vec::new();
+    ///
+    ///             while let Some(value) = rx.recv().await {
+    ///                 out.push(value);
+    ///             }
+    ///
+    ///             out
+    ///         });
+    ///
+    ///         let sender = task::spawn_local(async move {
+    ///             for n in 0..10 {
+    ///                 let result = tx.send(n).await;
+    ///             }
+    ///         });
+    ///
+    ///         collect.await
+    ///     }).await?;
+    ///
+    ///     assert_eq!(collected, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn send(&mut self, value: T) -> Send<'_, T> {
         Send {
             inner: &self.inner,
             to_send: Some(value),
         }
-        .await
     }
 }
 
-struct Send<'a, T> {
+/// Future returned when sending a value through [Sender::send].
+pub struct Send<'a, T> {
     inner: &'a BiRef<Shared<T>>,
     to_send: Option<T>,
 }
@@ -84,23 +114,20 @@ impl<'a, T> Future for Send<'a, T> {
             let (inner, both_present) = this.inner.load();
 
             if !both_present {
+                inner.tx = None;
                 let value = this.to_send.take().expect("future already completed");
                 return Poll::Ready(Err(SendError(value)));
             }
 
-            match &inner.state {
-                State::Empty | State::Sending(..) => {
-                    if !matches!(&inner.tx, Some(w) if w.will_wake(cx.waker())) {
-                        inner.tx = Some(cx.waker().clone());
-                    }
-
-                    return Poll::Pending;
+            if inner.buf.is_some() {
+                if !matches!(&inner.tx, Some(w) if w.will_wake(cx.waker())) {
+                    inner.tx = Some(cx.waker().clone());
                 }
-                State::Waiting => (),
+
+                return Poll::Pending;
             };
 
-            let to_send = this.to_send.take().expect("future already completed");
-            inner.state = State::Sending(to_send);
+            inner.buf = this.to_send.take();
 
             if let Some(waker) = &inner.rx {
                 waker.wake_by_ref();
@@ -118,21 +145,14 @@ pub struct Receiver<T> {
 
 impl<T> Receiver<T> {
     /// Receive a message on the channel.
-    pub async fn recv(&mut self) -> Option<T> {
-        unsafe {
-            let (inner, both_present) = self.inner.load();
-
-            if !both_present {
-                return None;
-            }
-
-            inner.state = State::Waiting;
-            Recv(&self.inner).await
-        }
+    pub fn recv(&mut self) -> Recv<'_, T> {
+        Recv { inner: &self.inner }
     }
 }
 
-struct Recv<'a, T>(&'a BiRef<Shared<T>>);
+pub struct Recv<'a, T> {
+    inner: &'a BiRef<Shared<T>>,
+}
 
 impl<'a, T> Future for Recv<'a, T> {
     type Output = Option<T>;
@@ -140,12 +160,10 @@ impl<'a, T> Future for Recv<'a, T> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         unsafe {
             let this = Pin::get_unchecked_mut(self);
-            let (inner, both_present) = this.0.load();
+            let (inner, both_present) = this.inner.load();
 
-            if let State::Sending(..) = &inner.state {
-                if let State::Sending(value) = replace(&mut inner.state, State::Empty) {
-                    return Poll::Ready(Some(value));
-                }
+            if let Some(value) = inner.buf.take() {
+                return Poll::Ready(Some(value));
             }
 
             if !both_present {
@@ -157,8 +175,8 @@ impl<'a, T> Future for Recv<'a, T> {
                 inner.rx = Some(cx.waker().clone())
             }
 
-            if let Some(waker) = &inner.tx {
-                waker.wake_by_ref();
+            if let Some(tx) = &inner.tx {
+                tx.wake_by_ref();
             }
 
             Poll::Pending
@@ -169,8 +187,8 @@ impl<'a, T> Future for Recv<'a, T> {
 impl<T> Drop for Recv<'_, T> {
     fn drop(&mut self) {
         unsafe {
-            let (inner, _) = self.0.load();
-            inner.state = State::Empty;
+            let (inner, _) = self.inner.load();
+            inner.buf = None;
         }
     }
 }
@@ -200,7 +218,7 @@ pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
     let (a, b) = BiRef::new(Shared {
         tx: None,
         rx: None,
-        state: State::Empty,
+        buf: None,
     });
 
     let rx = Receiver { inner: a };

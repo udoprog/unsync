@@ -20,7 +20,7 @@ async fn test_oneshot() -> Result<(), Box<dyn std::error::Error>> {
                 let mut n = 0;
 
                 while let Some(oneshot_tx) = rx.recv().await {
-                    let _ = oneshot_tx.send(n).await;
+                    let _ = oneshot_tx.send(n);
 
                     if n % 7 == 0 {
                         task::yield_now().await;
