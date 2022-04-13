@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use tokio::task;
 use unsync::{oneshot, spsc};
 
@@ -10,7 +8,6 @@ async fn test_oneshot() -> Result<(), Box<dyn std::error::Error>> {
     let local = task::LocalSet::new();
 
     let (mut tx, mut rx) = spsc::channel::<oneshot::Sender<u32>>(1);
-    // let (mut tx, mut rx) = tokio::sync::mpsc::channel(1);
 
     let (a, b) = local
         .run_until(async move {
