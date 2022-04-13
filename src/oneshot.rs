@@ -3,7 +3,7 @@
 //! This does allocate storage internally to maintain shared state between the
 //! [Sender] and [Receiver].
 
-use crate::bi_ref::BiRef;
+use crate::bi_rc::BiRc;
 use std::error;
 use std::fmt;
 use std::future::Future;
@@ -37,14 +37,13 @@ struct Shared<T> {
     buf: Option<T>,
 }
 
-/// Sender end of this queue.
-#[repr(transparent)]
+/// Sender end of the channel created through [channel].
 pub struct Sender<T> {
-    inner: BiRef<Shared<T>>,
+    inner: BiRc<Shared<T>>,
 }
 
 impl<T> Sender<T> {
-    /// Receive a message on the channel.
+    /// Send a message on this channel.
     pub fn send(self, value: T) -> Result<(), SendError<T>> {
         unsafe {
             let (inner, both_present) = self.inner.get_mut_unchecked();
@@ -64,29 +63,18 @@ impl<T> Sender<T> {
     }
 }
 
-/// Receiver end of this queue.
+/// Receiver end of the channel created through [channel].
 pub struct Receiver<T> {
-    inner: BiRef<Shared<T>>,
+    inner: BiRc<Shared<T>>,
 }
 
-impl<T> Receiver<T> {
-    /// Receive a message on the channel.
-    pub fn recv(self) -> Recv<T> {
-        Recv { receiver: self }
-    }
-}
-
-pub struct Recv<T> {
-    receiver: Receiver<T>,
-}
-
-impl<T> Future for Recv<T> {
+impl<T> Future for Receiver<T> {
     type Output = Option<T>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         unsafe {
             let this = Pin::get_unchecked_mut(self);
-            let (inner, both_present) = this.receiver.inner.get_mut_unchecked();
+            let (inner, both_present) = this.inner.get_mut_unchecked();
 
             if let Some(value) = inner.buf.take() {
                 return Poll::Ready(Some(value));
@@ -128,7 +116,7 @@ impl<T> Drop for Receiver<T> {
 
 /// Setup a spsc channel.
 pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
-    let (a, b) = BiRef::new(Shared {
+    let (a, b) = BiRc::new(Shared {
         waker: None,
         buf: None,
     });

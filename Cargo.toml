@@ -4,7 +4,12 @@ version = "0.0.0"
 edition = "2021"
 
 [dev-dependencies]
+criterion = { version = "0.3.5", features = ["html_reports"] }
 tokio = { version = "1.17.0", features = ["macros", "rt", "sync"] }
 
 [dependencies]
 slab = "0.4.6"
+
+[[bench]]
+name = "channels"
+harness = false

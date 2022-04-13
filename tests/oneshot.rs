@@ -7,8 +7,6 @@ const END: u32 = 1_000_000;
 
 #[tokio::test]
 async fn test_oneshot() -> Result<(), Box<dyn std::error::Error>> {
-    let start = Instant::now();
-
     let local = task::LocalSet::new();
 
     let (mut tx, mut rx) = spsc::channel::<oneshot::Sender<u32>>(1);
@@ -41,7 +39,7 @@ async fn test_oneshot() -> Result<(), Box<dyn std::error::Error>> {
                         task::yield_now().await;
                     }
 
-                    let value = oneshot_rx.recv().await;
+                    let value = oneshot_rx.await;
                     out.extend(value);
 
                     if n % 3 == 0 {
@@ -62,6 +60,5 @@ async fn test_oneshot() -> Result<(), Box<dyn std::error::Error>> {
     let expected = (0..END).collect::<Vec<_>>();
 
     assert_eq!(actual, expected);
-    dbg!(Instant::now().duration_since(start));
     Ok(())
 }

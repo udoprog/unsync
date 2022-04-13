@@ -3,9 +3,12 @@
 //! This is a very simple reference-counted data structure who's purpose is
 //! exactly two things:
 //! * Ensure that the guarded value is not de-allocated until all live
-//!   references of [BiRef] have been dropped.
-//! * Be able to flag when any of the two references of [BiRef] have been
+//!   references of [BiRc] have been dropped.
+//! * Be able to flag when any of the two references of [BiRc] have been
 //!   dropped.
+//!
+//! Now it's true that this API is roughly available through [Rc][std::rc::Rc],
+//! but it would be more awkward to wrap to use correctly.
 
 use std::cell::UnsafeCell;
 use std::ptr::NonNull;
@@ -22,14 +25,14 @@ struct Inner<T> {
 ///
 /// The wrapped reference can be always unsafely accessed with an indication of
 /// whether both references are alive or not at the same time through
-/// [BiRef::load].
-pub struct BiRef<T> {
+/// [BiRc::get_mut_unchecked].
+pub struct BiRc<T> {
     inner: NonNull<Inner<T>>,
 }
 
-impl<T> BiRef<T> {
-    /// Construct a new biRefed container.
-    pub fn new(value: T) -> (Self, Self) {
+impl<T> BiRc<T> {
+    /// Construct a new reference counted container.
+    pub(crate) fn new(value: T) -> (Self, Self) {
         let inner = NonNull::from(Box::leak(Box::new(Inner {
             value: UnsafeCell::new(value),
             count: 2,
@@ -43,21 +46,22 @@ impl<T> BiRef<T> {
     ///
     /// # Safety
     ///
-    /// Caller must ensure that the reference returned by `load` is only used by
-    /// one caller at a time.
+    /// Caller must ensure that the reference returned by `get_mut_unchecked` is
+    /// only used by one caller at the same time.
     pub unsafe fn get_mut_unchecked(&self) -> (&mut T, bool) {
         let inner = &mut (*self.inner.as_ptr());
         (inner.value.get_mut(), inner.count == 2)
     }
 }
 
-impl<T> Drop for BiRef<T> {
+impl<T> Drop for BiRc<T> {
     fn drop(&mut self) {
         unsafe {
             let inner = self.inner.as_ptr();
             let count = (*inner).count.wrapping_sub(1);
             (*inner).count = count;
 
+            // De-allocate interior structure.
             if count == 0 {
                 let _ = Box::from_raw(inner);
             }

@@ -3,7 +3,7 @@
 //! This does allocate storage internally to maintain shared state between the
 //! [Sender] and [Receiver].
 
-use crate::broad_ref::{BroadRef, Weak};
+use crate::broad_rc::{BroadRc, BroadWeak};
 use std::collections::VecDeque;
 use std::error;
 use std::fmt;
@@ -58,12 +58,12 @@ struct Shared<T> {
     capacity: usize,
 }
 
-/// Sender end of this queue.
+/// Sender end of the channel created through [channel].
 pub struct Sender<T>
 where
     T: Clone,
 {
-    inner: BroadRef<Shared<T>>,
+    inner: BroadRc<Shared<T>>,
 }
 
 impl<T> Sender<T>
@@ -114,8 +114,8 @@ where
     /// Receive a message on the channel.
     ///
     /// Note that *not driving the returned future to completion* might result
-    /// in some receivers not receiving value being sent.
-    pub fn send(&mut self, value: T) -> Send<'_, T> {
+    /// in some receivers not receiving the most up-to-date value.
+    pub async fn send(&mut self, value: T) -> Result<(), SendError> {
         // Increase the ID of messages to send.
         unsafe {
             let (inner, _) = self.inner.get_mut_unchecked();
@@ -132,12 +132,13 @@ where
             inner: &self.inner,
             value,
         }
+        .await
     }
 }
 
 /// Future produced by [Sender::send].
 pub struct Send<'a, T> {
-    inner: &'a BroadRef<Shared<T>>,
+    inner: &'a BroadRc<Shared<T>>,
     value: T,
 }
 
@@ -199,21 +200,21 @@ where
     }
 }
 
-/// Receiver end of this queue.
+/// Receiver end of the channel created through [channel].
 pub struct Receiver<T> {
     index: usize,
-    inner: Weak<Shared<T>>,
+    inner: BroadWeak<Shared<T>>,
 }
 
 impl<T> Receiver<T> {
     /// Receive a message on the channel.
-    pub fn recv(&mut self) -> Recv<'_, T> {
-        Recv { receiver: self }
+    pub async fn recv(&mut self) -> Option<T> {
+        Recv { receiver: self }.await
     }
 }
 
-/// Future associated with receiving.
-pub struct Recv<'a, T> {
+/// Future associated with receiving through [Receiver::recv].
+struct Recv<'a, T> {
     receiver: &'a mut Receiver<T>,
 }
 
@@ -224,7 +225,7 @@ impl<'a, T> Future for Recv<'a, T> {
         unsafe {
             let this = Pin::get_unchecked_mut(self);
             let index = this.receiver.index;
-            let (inner, sender_present) = this.receiver.inner.load();
+            let (inner, sender_present) = this.receiver.inner.get_mut_unchecked();
 
             let receiver = match inner.receivers.get_mut(index) {
                 Some(receiver) => receiver,
@@ -264,7 +265,7 @@ impl<T> Drop for Recv<'_, T> {
     fn drop(&mut self) {
         unsafe {
             let index = self.receiver.index;
-            let (inner, _) = self.receiver.inner.load();
+            let (inner, _) = self.receiver.inner.get_mut_unchecked();
 
             if let Some(receiver) = inner.receivers.get_mut(index) {
                 receiver.buf.clear();
@@ -294,10 +295,10 @@ impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
         unsafe {
             let index = self.index;
-            let (inner, _) = self.inner.load();
+            let (inner, _) = self.inner.get_mut_unchecked();
             let _ = inner.receivers.try_remove(index);
 
-            if let Some(waker) = self.inner.load().0.sender.take() {
+            if let Some(waker) = self.inner.get_mut_unchecked().0.sender.take() {
                 waker.wake();
             }
         }
@@ -315,7 +316,7 @@ where
 {
     assert!(capacity > 0, "capacity cannot be 0");
 
-    let inner = BroadRef::new(Shared {
+    let inner = BroadRc::new(Shared {
         id: 0,
         sender: None,
         receivers: slab::Slab::new(),

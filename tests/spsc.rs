@@ -52,3 +52,28 @@ async fn test_spsc() -> Result<(), Box<dyn std::error::Error>> {
     dbg!(Instant::now().duration_since(start));
     Ok(())
 }
+
+#[tokio::test]
+async fn test_try_send() -> Result<(), task::JoinError> {
+    let (mut tx, mut rx) = spsc::channel(3);
+    assert!(tx.try_send(1).is_ok());
+    assert!(tx.try_send(2).is_ok());
+    assert!(tx.try_send(3).is_ok());
+    assert!(tx.try_send(4).is_err());
+
+    let first = rx.recv().await;
+    assert_eq!(first, Some(1));
+    assert!(tx.try_send(5).is_ok());
+    assert!(tx.try_send(6).is_err());
+
+    let mut collected = Vec::new();
+
+    drop(tx);
+
+    while let Some(value) = rx.recv().await {
+        collected.push(value);
+    }
+
+    assert_eq!(collected, vec![2, 3, 5]);
+    Ok(())
+}

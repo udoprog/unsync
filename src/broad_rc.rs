@@ -3,8 +3,13 @@
 //! This is a very simple reference-counted data structure who's purpose is
 //! exactly two things:
 //! * Ensure that the guarded value is not de-allocated until all live
-//!   references of [BroadRef] have been dropped.
-//! * Indicates when either all strong or weak references have been dropped.
+//!   references of [BroadRc] and [BroadWeak] have been dropped.
+//! * Indicates when either all strong or weak references have been dropped so
+//!   the other ends knows. Allowing them to have an idea when the other end
+//!   "disconnects".
+//!
+//! Now it's true that this API is roughly available through [Rc][std::rc::Rc],
+//! but it would be more awkward to wrap to use correctly.
 
 use std::cell::UnsafeCell;
 use std::ptr::NonNull;
@@ -18,19 +23,28 @@ struct Inner<T> {
     weak: usize,
 }
 
+impl<T> Inner<T> {
+    /// Try and deallocate interior value of refcount has reached zero.
+    unsafe fn try_dealloc(ptr: *mut Self) {
+        if (*ptr).weak + (*ptr).strong == 0 {
+            let _ = Box::from_raw(ptr);
+        }
+    }
+}
+
 /// A simple `!Send` reference counted container which can be held at exactly
 /// two places.
 ///
 /// The wrapped reference can be always unsafely accessed with an indication of
 /// whether both references are alive or not at the same time through
-/// [BroadRef::load].
-pub struct BroadRef<T> {
+/// [BroadRc::load].
+pub struct BroadRc<T> {
     inner: NonNull<Inner<T>>,
 }
 
-impl<T> BroadRef<T> {
-    /// Construct a new BroadRefed container.
-    pub fn new(value: T) -> Self {
+impl<T> BroadRc<T> {
+    /// Construct a new reference-counted container.
+    pub(crate) fn new(value: T) -> Self {
         let inner = NonNull::from(Box::leak(Box::new(Inner {
             value: UnsafeCell::new(value),
             strong: 1,
@@ -41,12 +55,12 @@ impl<T> BroadRef<T> {
     }
 
     /// Construct a new weak reference.
-    pub fn weak(&self) -> Weak<T> {
+    pub fn weak(&self) -> BroadWeak<T> {
         unsafe {
             let mut inner = &mut (*self.inner.as_ptr());
             inner.weak += 1;
 
-            Weak { inner: self.inner }
+            BroadWeak { inner: self.inner }
         }
     }
 
@@ -55,56 +69,48 @@ impl<T> BroadRef<T> {
     ///
     /// # Safety
     ///
-    /// Caller must ensure that the reference returned by `load` is only used by
-    /// one caller at a time.
+    /// Caller must ensure that the reference returned by `get_mut_unchecked` is
+    /// only used by one caller at the same time.
     pub unsafe fn get_mut_unchecked(&self) -> (&mut T, bool) {
         let inner = &mut (*self.inner.as_ptr());
         (inner.value.get_mut(), inner.weak != 0)
     }
 }
 
-pub struct Weak<T> {
+pub struct BroadWeak<T> {
     inner: NonNull<Inner<T>>,
 }
 
-impl<T> Weak<T> {
+impl<T> BroadWeak<T> {
     /// Get the interior value and indicates with a boolean if there are no
     /// strong references available.
     ///
     /// # Safety
     ///
-    /// Caller must ensure that the reference returned by `load` is only used by
-    /// one caller at a time.
-    pub unsafe fn load(&self) -> (&mut T, bool) {
+    /// Caller must ensure that the reference returned by `get_mut_unchecked` is
+    /// only used by one caller at the same time.
+    pub unsafe fn get_mut_unchecked(&self) -> (&mut T, bool) {
         let inner = &mut (*self.inner.as_ptr());
         (inner.value.get_mut(), inner.strong != 0)
     }
 }
 
-impl<T> Drop for BroadRef<T> {
+impl<T> Drop for BroadRc<T> {
     fn drop(&mut self) {
         unsafe {
             let inner = self.inner.as_ptr();
-            let count = (*inner).strong.wrapping_sub(1);
-            (*inner).strong = count;
-
-            if (*inner).weak + count == 0 {
-                let _ = Box::from_raw(inner);
-            }
+            (*inner).strong = (*inner).strong.wrapping_sub(1);
+            Inner::try_dealloc(inner);
         }
     }
 }
 
-impl<T> Drop for Weak<T> {
+impl<T> Drop for BroadWeak<T> {
     fn drop(&mut self) {
         unsafe {
             let inner = self.inner.as_ptr();
-            let count = (*inner).weak.wrapping_sub(1);
-            (*inner).weak = count;
-
-            if (*inner).strong + count == 0 {
-                let _ = Box::from_raw(inner);
-            }
+            (*inner).weak = (*inner).weak.wrapping_sub(1);
+            Inner::try_dealloc(inner);
         }
     }
 }

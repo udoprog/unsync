@@ -6,7 +6,7 @@
 //! This does allocate storage internally to maintain shared state between the
 //! [Sender] and [Receiver].
 
-use crate::bi_ref::BiRef;
+use crate::bi_rc::BiRc;
 use std::collections::VecDeque;
 use std::error;
 use std::fmt;
@@ -57,12 +57,49 @@ impl<T> Shared<T> {
     }
 }
 
-/// Sender end of this queue.
+/// Sender end of the channel created through [channel].
 pub struct Sender<T> {
-    inner: BiRef<Shared<T>>,
+    inner: BiRc<Shared<T>>,
 }
 
 impl<T> Sender<T> {
+    /// Try to send a message on the channel without blocking.
+    ///
+    /// This will succeed if there is sufficient capacity to send, but fail
+    /// otherwise.
+    ///
+    /// Note: don't attempt to use this as an optimization over [Sender::send]
+    /// since it already performs this operation internally as needed.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() {
+    /// let (mut tx, mut rx) = unsync::spsc::channel(3);
+    /// assert!(tx.try_send(1).is_ok());
+    /// assert!(tx.try_send(2).is_ok());
+    /// assert!(tx.try_send(3).is_ok());
+    /// assert!(tx.try_send(4).is_err());
+    ///
+    /// let first = rx.recv().await;
+    /// assert_eq!(first, Some(1));
+    ///
+    /// assert!(tx.try_send(5).is_ok());
+    /// assert!(tx.try_send(6).is_err());
+    ///
+    /// let mut collected = Vec::new();
+    ///
+    /// // Drop sender so that the channel "ends".
+    /// drop(tx);
+    ///
+    /// while let Some(value) = rx.recv().await {
+    ///     collected.push(value);
+    /// }
+    ///
+    /// assert_eq!(collected, vec![2, 3, 5]);
+    /// # }
+    /// ```
     pub fn try_send(&mut self, value: T) -> Result<(), SendError<T>> {
         unsafe {
             let (inner, both_present) = self.inner.get_mut_unchecked();
@@ -88,47 +125,46 @@ impl<T> Sender<T> {
     /// ```rust
     /// use tokio::task;
     ///
-    /// #[tokio::main(flavor = "current_thread")]
-    /// async fn main() -> Result<(), task::JoinError> {
-    ///     let (mut tx, mut rx) = unsync::spsc::channel();
+    /// # #[tokio::main(flavor = "current_thread")] async fn main() -> Result<(), task::JoinError> {
+    /// let (mut tx, mut rx) = unsync::spsc::channel(1);
     ///
-    ///     let local = task::LocalSet::new();
+    /// let local = task::LocalSet::new();
     ///
-    ///     let collected = local.run_until(async move {
-    ///         let collect = task::spawn_local(async move {
-    ///             let mut out = Vec::new();
+    /// let collected = local.run_until(async move {
+    ///     let collect = task::spawn_local(async move {
+    ///         let mut out = Vec::new();
     ///
-    ///             while let Some(value) = rx.recv().await {
-    ///                 out.push(value);
-    ///             }
+    ///         while let Some(value) = rx.recv().await {
+    ///             out.push(value);
+    ///         }
     ///
-    ///             out
-    ///         });
+    ///         out
+    ///     });
     ///
-    ///         let sender = task::spawn_local(async move {
-    ///             for n in 0..10 {
-    ///                 let result = tx.send(n).await;
-    ///             }
-    ///         });
+    ///     let sender = task::spawn_local(async move {
+    ///         for n in 0..10 {
+    ///             let result = tx.send(n).await;
+    ///         }
+    ///     });
     ///
-    ///         collect.await
-    ///     }).await?;
+    ///     collect.await
+    /// }).await?;
     ///
-    ///     assert_eq!(collected, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
-    ///     Ok(())
-    /// }
+    /// assert_eq!(collected, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    /// # Ok(()) }
     /// ```
-    pub fn send(&mut self, value: T) -> Send<'_, T> {
+    pub async fn send(&mut self, value: T) -> Result<(), SendError<T>> {
         Send {
             inner: &self.inner,
             value: Some(value),
         }
+        .await
     }
 }
 
 /// Future returned when sending a value through [Sender::send].
 pub struct Send<'a, T> {
-    inner: &'a BiRef<Shared<T>>,
+    inner: &'a BiRc<Shared<T>>,
     value: Option<T>,
 }
 
@@ -170,20 +206,20 @@ impl<'a, T> Future for Send<'a, T> {
     }
 }
 
-/// Receiver end of this queue.
+/// Receiver end of the channel created through [channel].
 pub struct Receiver<T> {
-    inner: BiRef<Shared<T>>,
+    inner: BiRc<Shared<T>>,
 }
 
 impl<T> Receiver<T> {
     /// Receive a message on the channel.
-    pub fn recv(&mut self) -> Recv<'_, T> {
-        Recv { inner: &self.inner }
+    pub async fn recv(&mut self) -> Option<T> {
+        Recv { inner: &self.inner }.await
     }
 }
 
-pub struct Recv<'a, T> {
-    inner: &'a BiRef<Shared<T>>,
+struct Recv<'a, T> {
+    inner: &'a BiRc<Shared<T>>,
 }
 
 impl<'a, T> Future for Recv<'a, T> {
@@ -212,15 +248,6 @@ impl<'a, T> Future for Recv<'a, T> {
             }
 
             Poll::Pending
-        }
-    }
-}
-
-impl<T> Drop for Recv<'_, T> {
-    fn drop(&mut self) {
-        unsafe {
-            let (inner, _) = self.inner.get_mut_unchecked();
-            inner.buf.clear();
         }
     }
 }
@@ -256,7 +283,7 @@ impl<T> Drop for Receiver<T> {
 pub fn channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
     assert!(capacity > 0, "capacity cannot be 0");
 
-    let (a, b) = BiRef::new(Shared {
+    let (a, b) = BiRc::new(Shared {
         tx: None,
         rx: None,
         buf: VecDeque::with_capacity(capacity),
@@ -273,7 +300,7 @@ pub fn channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
 ///
 /// Sending through this channel will never block.
 pub fn unbounded<T>() -> (Sender<T>, Receiver<T>) {
-    let (a, b) = BiRef::new(Shared {
+    let (a, b) = BiRc::new(Shared {
         tx: None,
         rx: None,
         buf: VecDeque::new(),
