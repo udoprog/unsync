@@ -121,8 +121,8 @@ impl<T> Future for Receiver<T> {
     type Output = Option<T>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = Pin::into_inner(self);
         unsafe {
-            let this = Pin::get_unchecked_mut(self);
             let (inner, both_present) = this.inner.get_mut_unchecked();
 
             if let Some(value) = inner.buf.take() {
