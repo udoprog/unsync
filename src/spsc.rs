@@ -166,9 +166,9 @@ impl<'a, T> Future for Send<'a, T> {
     type Output = Result<(), SendError<T>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        unsafe {
-            let this = Pin::get_unchecked_mut(self);
+        let this = Pin::into_inner(self);
 
+        unsafe {
             let (inner, both_present) = this.inner.get_mut_unchecked();
 
             if !both_present {
@@ -199,6 +199,8 @@ impl<'a, T> Future for Send<'a, T> {
         }
     }
 }
+
+impl<T> Unpin for Send<'_, T> {}
 
 /// Receiver end of the channel created through [channel].
 pub struct Receiver<T> {
@@ -254,8 +256,8 @@ impl<'a, T> Future for Recv<'a, T> {
     type Output = Option<T>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = Pin::into_inner(self);
         unsafe {
-            let this = Pin::get_unchecked_mut(self);
             let (inner, both_present) = this.inner.get_mut_unchecked();
 
             if let Some(value) = inner.buf.pop_front() {

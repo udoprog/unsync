@@ -288,9 +288,9 @@ where
     type Output = usize;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        unsafe {
-            let this = Pin::get_unchecked_mut(self);
+        let this = Pin::into_inner(self);
 
+        unsafe {
             let (inner, any_receivers_present) = this.inner.get_mut_unchecked();
 
             if !any_receivers_present {
@@ -338,6 +338,8 @@ where
         }
     }
 }
+
+impl<'a, T> Unpin for Send<'a, T> {}
 
 /// Receiver end of the channel created through [channel].
 pub struct Receiver<T> {
@@ -390,8 +392,8 @@ impl<'a, T> Future for Recv<'a, T> {
     type Output = Option<T>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = Pin::into_inner(self);
         unsafe {
-            let this = Pin::get_unchecked_mut(self);
             let index = this.receiver.index;
             let (inner, sender_present) = this.receiver.inner.get_mut_unchecked();
 
