@@ -9,7 +9,7 @@ repository = "https://github.com/udoprog/unsync"
 homepage = "https://github.com/udoprog/unsync"
 documentation = "https://docs.rs/unsync"
 description = """
-Unsynchronized channels for async Rust.
+Unsynchronized synchronization primitives for async Rust.
 """
 categories = ["asynchronous"]
 keywords = ["io", "async", "non-blocking", "futures"]
