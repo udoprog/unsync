@@ -92,12 +92,12 @@ struct Inner<T> {
     /// The head of the queue; the oldest waiter.
     ///
     /// If this is `None`, the list is empty.
-    head: Option<NonNull<UnsafeCell<Waiter<T>>>>,
+    head: Option<NonNull<Waiter<T>>>,
 
     /// The tail of the queue; the newest waiter.
     ///
     /// Whether this is `None` must remain in sync with whether `head` is `None`.
-    tail: Option<NonNull<UnsafeCell<Waiter<T>>>>,
+    tail: Option<NonNull<Waiter<T>>>,
 }
 
 /// A waiter in the above list.
@@ -110,10 +110,10 @@ struct Inner<T> {
 /// linked list by `dequeue` when the future completes or is cancelled.
 struct Waiter<T> {
     /// The next waiter in the linked list.
-    next: Option<NonNull<UnsafeCell<Waiter<T>>>>,
+    next: Option<NonNull<Waiter<T>>>,
 
     /// The previous waiter in the linked list.
-    prev: Option<NonNull<UnsafeCell<Waiter<T>>>>,
+    prev: Option<NonNull<Waiter<T>>>,
 
     /// Extra state held by each waiter.
     state: T,
@@ -167,18 +167,17 @@ impl<T> WaitList<T> {
     ///
     /// Panics if the list is currently borrowed.
     pub async fn wait(&self, state: T) -> T {
-        let waiter = UnsafeCell::new(Waiter {
+        let mut waiter = Waiter {
             // Both start out as `None` but are filled in later.
             next: None,
             prev: None,
             state,
             waker: Some(CloneWaker.await),
-        });
+        };
 
         // SAFETY: `waiter` is a local variable so we have unique access to it.
-        unsafe { WaitInner::new(self, &waiter) }.await;
-
-        waiter.into_inner().state
+        unsafe { WaitInner::new(self, NonNull::from(&mut waiter)) }.await;
+        waiter.state
     }
 }
 
@@ -207,9 +206,9 @@ impl<'wait_list, T> Borrowed<'wait_list, T> {
         unsafe { &mut *self.list.inner.get() }
     }
 
-    fn head(&self) -> Option<&UnsafeCell<Waiter<T>>> {
+    fn head(&self) -> Option<NonNull<Waiter<T>>> {
         // SAFETY: The head pointer of the linked list must always be valid.
-        Some(unsafe { self.inner().head?.as_ref() })
+        self.inner().head
     }
 
     /// Check whether there are any futures waiting in this list.
@@ -223,7 +222,7 @@ impl<'wait_list, T> Borrowed<'wait_list, T> {
     #[must_use]
     pub fn head_state(&self) -> Option<&T> {
         // SAFETY: We have set `borrowed`, so we can access any entry in the list.
-        Some(&unsafe { &*self.head()?.get() }.state)
+        Some(&unsafe { self.head()?.as_ref() }.state)
     }
 
     /// Retrieve a unique reference to the state held by the head entry in the list, if there is
@@ -231,7 +230,7 @@ impl<'wait_list, T> Borrowed<'wait_list, T> {
     #[must_use]
     pub fn head_state_mut(&mut self) -> Option<&mut T> {
         // SAFETY: We have set `borrowed`, so we can access any entry in the list.
-        Some(&mut unsafe { &mut *self.head()?.get() }.state)
+        Some(&mut unsafe { self.head()?.as_mut() }.state)
     }
 
     /// Add a waiter node to the end of this linked list.
@@ -240,15 +239,15 @@ impl<'wait_list, T> Borrowed<'wait_list, T> {
     ///
     /// - `waiter` must be the only reference to that object.
     /// - `waiter` must be a valid pointer until it is removed.
-    unsafe fn enqueue(&mut self, waiter: &UnsafeCell<Waiter<T>>) {
+    unsafe fn enqueue(&mut self, mut waiter: NonNull<Waiter<T>>) {
         // Set the previous waiter to the current tail of the queue, if there was one.
-        unsafe { &mut *waiter.get() }.prev = self.inner_mut().tail;
+        unsafe { waiter.as_mut() }.prev = self.inner_mut().tail;
 
         let waiter_ptr = NonNull::from(waiter);
 
         // Update the old tail's next pointer
-        if let Some(prev) = self.inner_mut().tail {
-            let prev = unsafe { &mut *prev.as_ref().get() };
+        if let Some(mut prev) = self.inner_mut().tail {
+            let prev = unsafe { prev.as_mut() };
             debug_assert_eq!(prev.next, None);
             prev.next = Some(waiter_ptr);
         }
@@ -265,16 +264,16 @@ impl<'wait_list, T> Borrowed<'wait_list, T> {
     /// # Safety
     ///
     /// - `waiter` must be a waiter in this queue.
-    unsafe fn dequeue(&mut self, waiter: &UnsafeCell<Waiter<T>>) {
-        let waiter_ptr = Some(NonNull::from(waiter));
-        let waiter = unsafe { &mut *waiter.get() };
+    unsafe fn dequeue(&mut self, waiter: NonNull<Waiter<T>>) {
+        let waiter_ptr = Some(waiter);
+        let waiter = unsafe { &mut *waiter.as_ptr() };
 
         let prev = waiter.prev;
         let next = waiter.next;
 
         // Update the pointer of the previous node, or the queue head
         let prev_next_pointer = match waiter.prev {
-            Some(prev) => &mut unsafe { &mut *prev.as_ref().get() }.next,
+            Some(mut prev) => &mut unsafe { &mut *prev.as_mut() }.next,
             None => &mut self.inner_mut().head,
         };
         debug_assert_eq!(*prev_next_pointer, waiter_ptr);
@@ -282,7 +281,7 @@ impl<'wait_list, T> Borrowed<'wait_list, T> {
 
         // Update the pointer of the next node, or the queue tail
         let next_prev_pointer = match waiter.next {
-            Some(next) => &mut unsafe { &mut *next.as_ref().get() }.prev,
+            Some(mut next) => &mut unsafe { next.as_mut() }.prev,
             None => &mut self.inner_mut().tail,
         };
         debug_assert_eq!(*next_prev_pointer, waiter_ptr);
@@ -291,16 +290,12 @@ impl<'wait_list, T> Borrowed<'wait_list, T> {
 
     /// Wake and dequeue the first waiter in the queue, if there is one.
     pub fn wake_one(&mut self) {
-        let head = match self.head() {
+        let mut head = match self.head() {
             Some(head) => head,
             None => return,
         };
 
-        let waker = unsafe { &mut *head.get() }.waker.take().unwrap();
-
-        // Extend the lifetime of `head` so the `self` borrow below doesn't conflict with it.
-        // SAFETY: The safety contract of `enqueue` ensures the waiter lives long enough.
-        let head = unsafe { NonNull::from(head).as_ref() };
+        let waker = unsafe { head.as_mut() }.waker.take().unwrap();
 
         // Dequeue the first waiter now that it's not necessary to keep it in the queue.
         unsafe { self.dequeue(head) };
@@ -318,28 +313,28 @@ impl<T> Drop for Borrowed<'_, T> {
 }
 
 /// The inner future used by a waiting operation.
-struct WaitInner<'list, 'waiter, T> {
+struct WaitInner<'list, T> {
     list: &'list WaitList<T>,
-    waiter: &'waiter UnsafeCell<Waiter<T>>,
+    waiter: NonNull<Waiter<T>>,
 }
 
-impl<'list, 'waiter, T> WaitInner<'list, 'waiter, T> {
+impl<'list, T> WaitInner<'list, T> {
     /// # Safety
     ///
     /// - `waiter` must be the only reference to that object.
-    unsafe fn new(list: &'list WaitList<T>, waiter: &'waiter UnsafeCell<Waiter<T>>) -> Self {
+    unsafe fn new(list: &'list WaitList<T>, waiter: NonNull<Waiter<T>>) -> Self {
         // SAFETY: Upheld by the caller.
         unsafe { list.borrow().enqueue(waiter) };
         Self { list, waiter }
     }
 }
 
-impl<T> Future for WaitInner<'_, '_, T> {
+impl<T> Future for WaitInner<'_, T> {
     type Output = ();
     fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Self::Output> {
         let _guard = self.list.borrow();
 
-        let old_waker = &mut unsafe { &mut *self.waiter.get() }.waker;
+        let old_waker = &mut unsafe { &mut *self.waiter.as_ptr() }.waker;
         match old_waker {
             // No need to update the waker
             Some(same_waker) if same_waker.will_wake(cx.waker()) => {}
@@ -354,7 +349,7 @@ impl<T> Future for WaitInner<'_, '_, T> {
     }
 }
 
-impl<T> Drop for WaitInner<'_, '_, T> {
+impl<T> Drop for WaitInner<'_, T> {
     fn drop(&mut self) {
         let mut list = match self.list.try_borrow() {
             Some(guard) => guard,
@@ -363,7 +358,7 @@ impl<T> Drop for WaitInner<'_, '_, T> {
             None => process::abort(),
         };
 
-        if unsafe { &*self.waiter.get() }.waker.is_some() {
+        if unsafe { self.waiter.as_ref() }.waker.is_some() {
             unsafe { list.dequeue(self.waiter) };
         }
     }
@@ -454,6 +449,25 @@ mod tests {
         drop(f3);
         drop(f1);
         assert!(list.borrow().is_empty());
+    }
+
+    #[test]
+    fn make_miri_unhappy() {
+        noop_cx!(cx);
+
+        let list = <WaitList<u32>>::new();
+
+        let f1 = list.wait(1);
+        tokio::pin!(f1);
+
+        assert_eq!(f1.as_mut().poll(cx), Poll::Pending);
+
+        if let Some(state) = list.borrow().head_state_mut() {
+            *state = 2;
+        }
+
+        list.borrow().wake_one();
+        assert_eq!(f1.as_mut().poll(cx), Poll::Ready(2));
     }
 
     macro_rules! noop_cx {
