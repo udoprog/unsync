@@ -105,3 +105,4 @@ mod broad_rc;
 pub mod broadcast;
 pub mod oneshot;
 pub mod spsc;
+pub mod wait_list;
