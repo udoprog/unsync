@@ -411,11 +411,10 @@ impl Future for CloneWaker {
 #[cfg(test)]
 mod tests {
     use std::future::Future;
-    use std::sync::Arc;
-    use std::task;
     use std::task::Poll;
 
     use super::WaitList;
+    use crate::noop_cx;
 
     #[test]
     fn wake_empty() {
@@ -484,21 +483,5 @@ mod tests {
         drop(f3);
         drop(f1);
         assert!(list.borrow().is_empty());
-    }
-
-    macro_rules! noop_cx {
-        ($cx:ident) => {
-            let waker = noop_waker();
-            let $cx = &mut task::Context::from_waker(&waker);
-        };
-    }
-    use noop_cx;
-
-    fn noop_waker() -> task::Waker {
-        struct Noop;
-        impl task::Wake for Noop {
-            fn wake(self: Arc<Self>) {}
-        }
-        task::Waker::from(Arc::new(Noop))
     }
 }
