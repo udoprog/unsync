@@ -104,5 +104,33 @@ mod bi_rc;
 mod broad_rc;
 pub mod broadcast;
 pub mod oneshot;
+mod semaphore;
 pub mod spsc;
 pub mod wait_list;
+
+pub use semaphore::Semaphore;
+pub use semaphore::SemaphorePermit;
+
+#[cfg(test)]
+mod test_util {
+    use std::sync::Arc;
+    use std::task;
+
+    macro_rules! noop_cx {
+        ($cx:ident) => {
+            let waker = crate::test_util::noop_waker();
+            let $cx = &mut std::task::Context::from_waker(&waker);
+        };
+    }
+    pub(crate) use noop_cx;
+
+    pub(crate) fn noop_waker() -> task::Waker {
+        struct Noop;
+        impl task::Wake for Noop {
+            fn wake(self: Arc<Self>) {}
+        }
+        task::Waker::from(Arc::new(Noop))
+    }
+}
+#[cfg(test)]
+use test_util::noop_cx;
