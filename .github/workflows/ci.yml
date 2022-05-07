@@ -51,6 +51,9 @@ jobs:
       with:
         command: miri
         args: test
+      env:
+        RUSTFLAGS: -Zrandomize-layout
+        MIRIFLAGS: -Zmiri-strict-provenance -Zmiri-symbolic-alignment-check
 
   rustfmt:
     runs-on: ubuntu-latest
