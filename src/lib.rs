@@ -106,14 +106,14 @@ mod broad_rc;
 pub mod broadcast;
 pub mod once_cell;
 pub mod oneshot;
-mod semaphore;
+pub mod semaphore;
 pub mod spsc;
 pub mod wait_list;
 
 #[doc(no_inline)]
 pub use once_cell::OnceCell;
+#[doc(no_inline)]
 pub use semaphore::Semaphore;
-pub use semaphore::SemaphorePermit;
 
 #[cfg(test)]
 mod test_util {
