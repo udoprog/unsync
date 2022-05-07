@@ -1,3 +1,5 @@
+//! [`Semaphore`] provides an unsychronized asynchronous semaphore for permit acquisition.
+
 use std::cell::Cell;
 use std::mem::ManuallyDrop;
 
@@ -31,7 +33,7 @@ use crate::wait_list::WaitList;
 ///
 /// [`acquire`]: Self::acquire
 /// [`acquire_unfair`]: Self::acquire_unfair
-/// [`release_fair`]: SemaphorePermit::release_fair
+/// [`release_fair`]: Permit::release_fair
 /// [Tokio's semaphore]: https://docs.rs/tokio/1/tokio/sync/struct.Semaphore.html
 #[derive(Debug)]
 pub struct Semaphore {
@@ -124,7 +126,7 @@ impl Semaphore {
     ///
     /// [`None`] is returned if there are not enough permits available **or** a task is currently
     /// waiting for a permit.
-    pub fn try_acquire(&self, to_acquire: usize) -> Option<SemaphorePermit<'_>> {
+    pub fn try_acquire(&self, to_acquire: usize) -> Option<Permit<'_>> {
         // If a task is already waiting for some permits, we mustn't steal it.
         if !self.waiters.borrow().is_empty() {
             return None;
@@ -138,10 +140,10 @@ impl Semaphore {
     ///
     /// [`None`] is returned if there are not enough permits available, but **not** if a task is
     /// currently waiting for a permit.
-    pub fn try_acquire_unfair(&self, to_acquire: usize) -> Option<SemaphorePermit<'_>> {
+    pub fn try_acquire_unfair(&self, to_acquire: usize) -> Option<Permit<'_>> {
         if let Some(new_permits) = self.permits.get().checked_sub(to_acquire) {
             self.permits.set(new_permits);
-            Some(SemaphorePermit {
+            Some(Permit {
                 semaphore: self,
                 permits: to_acquire,
             })
@@ -151,7 +153,7 @@ impl Semaphore {
     }
 
     /// Acquire permits from the semaphore.
-    pub async fn acquire(&self, to_acquire: usize) -> SemaphorePermit<'_> {
+    pub async fn acquire(&self, to_acquire: usize) -> Permit<'_> {
         loop {
             if let Some(guard) = self.try_acquire(to_acquire) {
                 break guard;
@@ -160,7 +162,7 @@ impl Semaphore {
             match self.waiters.wait(to_acquire).await {
                 WakeUp::Unfair => continue,
                 WakeUp::Fair => {
-                    return SemaphorePermit {
+                    return Permit {
                         semaphore: self,
                         permits: to_acquire,
                     };
@@ -171,7 +173,7 @@ impl Semaphore {
 
     /// Acquire permits from the semaphore, potentially unfairly stealing permits from a task that
     /// is waiting for permits.
-    pub async fn acquire_unfair(&self, to_acquire: usize) -> SemaphorePermit<'_> {
+    pub async fn acquire_unfair(&self, to_acquire: usize) -> Permit<'_> {
         loop {
             if let Some(guard) = self.try_acquire_unfair(to_acquire) {
                 break guard;
@@ -180,7 +182,7 @@ impl Semaphore {
             match self.waiters.wait(to_acquire).await {
                 WakeUp::Unfair => continue,
                 WakeUp::Fair => {
-                    return SemaphorePermit {
+                    return Permit {
                         semaphore: self,
                         permits: to_acquire,
                     };
@@ -192,12 +194,12 @@ impl Semaphore {
 
 /// A RAII guard holding a number of permits obtained from a [`Semaphore`].
 #[derive(Debug)]
-pub struct SemaphorePermit<'semaphore> {
+pub struct Permit<'semaphore> {
     semaphore: &'semaphore Semaphore,
     permits: usize,
 }
 
-impl<'semaphore> SemaphorePermit<'semaphore> {
+impl<'semaphore> Permit<'semaphore> {
     /// Retrieve a shared reference to the semaphore this guard is for.
     #[must_use]
     pub fn semaphore(&self) -> &'semaphore Semaphore {
@@ -230,7 +232,7 @@ impl<'semaphore> SemaphorePermit<'semaphore> {
     }
 }
 
-impl Drop for SemaphorePermit<'_> {
+impl Drop for Permit<'_> {
     fn drop(&mut self) {
         self.semaphore()
             .release_permits(self.permits(), WakeUp::Unfair);
