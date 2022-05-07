@@ -116,7 +116,7 @@ impl Semaphore {
             if let WakeUp::Fair = fairness {
                 self.permits.set(permits);
             }
-            waiters.wake_one(fairness);
+            waiters.wake_one(fairness).unwrap();
         }
     }
 
@@ -241,7 +241,7 @@ impl Drop for SemaphorePermit<'_> {
 mod tests {
     use std::future::Future;
 
-    use crate::noop_cx;
+    use crate::test_util::noop_cx;
     use crate::Semaphore;
 
     #[test]

@@ -313,20 +313,22 @@ impl<'wait_list, I, O> Borrowed<'wait_list, I, O> {
     }
 
     /// Wake and dequeue the first waiter in the queue, if there is one.
-    pub fn wake_one(&mut self, output: O) {
-        let head = match self.head() {
-            Some(head) => head,
-            None => return,
-        };
+    ///
+    /// Returns ownership of that waiter's input value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when there are no wakers in the list.
+    pub fn wake_one(&mut self, output: O) -> Result<I, ()> {
+        let head = self.head().ok_or(())?;
 
         let head_waiter = unsafe { &mut *head.get() };
 
         // Take the `Waker`, both for later waking and to mark it as woken
         let waker = head_waiter.waker.take().unwrap();
 
-        // Replace the old input with our output. It is important that this is dropped later and
-        // not now so we don't have to deal with panics.
-        let _input = unsafe { ManuallyDrop::take(&mut head_waiter.state.input) };
+        // Replace the old input with our output.
+        let input = unsafe { ManuallyDrop::take(&mut head_waiter.state.input) };
         head_waiter.state.output = ManuallyDrop::new(output);
 
         // Extend the lifetime of `head` so the `self` borrow below doesn't conflict with it.
@@ -338,6 +340,8 @@ impl<'wait_list, I, O> Borrowed<'wait_list, I, O> {
 
         // Wake the waker last, to ensure that if this panics nothing goes wrong.
         waker.wake();
+
+        Ok(input)
     }
 }
 
@@ -414,13 +418,13 @@ mod tests {
     use std::task::Poll;
 
     use super::WaitList;
-    use crate::noop_cx;
+    use crate::test_util::noop_cx;
 
     #[test]
     fn wake_empty() {
         let list = <WaitList<(), ()>>::new();
-        list.borrow().wake_one(());
-        list.borrow().wake_one(());
+        list.borrow().wake_one(()).unwrap_err();
+        list.borrow().wake_one(()).unwrap_err();
         assert_eq!(list.borrow().head_input(), None);
     }
 
@@ -445,7 +449,7 @@ mod tests {
         assert_eq!(future.as_mut().poll(cx), Poll::Pending);
         assert_eq!(**list.borrow().head_input().unwrap(), 5);
 
-        list.borrow().wake_one(Box::new(6));
+        list.borrow().wake_one(Box::new(6)).unwrap();
         assert_eq!(future.as_mut().poll(cx), Poll::Ready(Box::new(6)));
         assert_eq!(list.borrow().head_input(), None);
     }
@@ -459,11 +463,11 @@ mod tests {
         let mut f3 = Box::pin(list.wait(Box::new(3)));
         assert_eq!(f1.as_mut().poll(cx), Poll::Pending);
         assert_eq!(f2.as_mut().poll(cx), Poll::Pending);
-        list.borrow().wake_one(Box::new(11));
+        list.borrow().wake_one(Box::new(11)).unwrap();
         assert_eq!(f3.as_mut().poll(cx), Poll::Pending);
-        list.borrow().wake_one(Box::new(12));
-        list.borrow().wake_one(Box::new(99));
-        list.borrow().wake_one(Box::new(99));
+        list.borrow().wake_one(Box::new(12)).unwrap();
+        list.borrow().wake_one(Box::new(99)).unwrap();
+        list.borrow().wake_one(Box::new(99)).unwrap_err();
         assert_eq!(f2.as_mut().poll(cx), Poll::Ready(Box::new(12)));
         assert_eq!(f1.as_mut().poll(cx), Poll::Ready(Box::new(11)));
     }

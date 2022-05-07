@@ -99,15 +99,19 @@
 //! [futures::unsync]: <https://docs.rs/futures/0.1.31/futures/unsync/index.html>
 
 #![deny(missing_docs)]
+#![allow(clippy::result_unit_err)]
 
 mod bi_rc;
 mod broad_rc;
 pub mod broadcast;
+pub mod once_cell;
 pub mod oneshot;
 mod semaphore;
 pub mod spsc;
 pub mod wait_list;
 
+#[doc(no_inline)]
+pub use once_cell::OnceCell;
 pub use semaphore::Semaphore;
 pub use semaphore::SemaphorePermit;
 
@@ -132,5 +136,3 @@ mod test_util {
         task::Waker::from(Arc::new(Noop))
     }
 }
-#[cfg(test)]
-use test_util::noop_cx;
