@@ -24,6 +24,7 @@ pub struct OnceCell<T> {
     waiters: WaitList<(), ()>,
 }
 
+#[derive(Debug)]
 enum State<T> {
     /// The value has not been filled yet
     Uninit,
@@ -312,11 +313,9 @@ impl<T> OnceCell<T> {
 
 impl<T: Debug> Debug for OnceCell<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut s = f.debug_struct("OnceCell");
-        if let Some(inner) = self.get() {
-            s.field("value", inner);
-        }
-        s.finish()
+        f.debug_struct("OnceCell")
+            .field("state", unsafe { &*self.state.get() })
+            .finish()
     }
 }
 
