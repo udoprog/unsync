@@ -1,7 +1,5 @@
 //! [`OnceCell`] holds a value that can be written to only once.
 
-#![warn(unsafe_op_in_unsafe_fn)]
-
 use std::cell::UnsafeCell;
 use std::convert::Infallible;
 use std::fmt;

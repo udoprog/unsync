@@ -1,5 +1,4 @@
 //! [`WaitList`] is an intrusively linked list of futures waiting on an event.
-#![warn(unsafe_op_in_unsafe_fn)]
 
 use std::cell::Cell;
 use std::cell::UnsafeCell;
