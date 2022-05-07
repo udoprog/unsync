@@ -49,7 +49,7 @@ impl<T> BiRc<T> {
     /// Caller must ensure that the reference returned by `get_mut_unchecked` is
     /// only used by one caller at the same time.
     pub unsafe fn get_mut_unchecked(&self) -> (&mut T, bool) {
-        let inner = &mut (*self.inner.as_ptr());
+        let inner = unsafe { &mut (*self.inner.as_ptr()) };
         (inner.value.get_mut(), inner.count == 2)
     }
 }

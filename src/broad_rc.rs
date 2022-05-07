@@ -26,8 +26,10 @@ struct Inner<T> {
 impl<T> Inner<T> {
     /// Try and deallocate interior value of refcount has reached zero.
     unsafe fn try_dealloc(ptr: *mut Self) {
-        if (*ptr).weak + (*ptr).strong == 0 {
-            let _ = Box::from_raw(ptr);
+        unsafe {
+            if (*ptr).weak + (*ptr).strong == 0 {
+                let _ = Box::from_raw(ptr);
+            }
         }
     }
 }
@@ -72,7 +74,7 @@ impl<T> BroadRc<T> {
     /// Caller must ensure that the reference returned by `get_mut_unchecked` is
     /// only used by one caller at the same time.
     pub unsafe fn get_mut_unchecked(&self) -> (&mut T, bool) {
-        let inner = &mut (*self.inner.as_ptr());
+        let inner = unsafe { &mut (*self.inner.as_ptr()) };
         (inner.value.get_mut(), inner.weak != 0)
     }
 }
@@ -90,7 +92,7 @@ impl<T> BroadWeak<T> {
     /// Caller must ensure that the reference returned by `get_mut_unchecked` is
     /// only used by one caller at the same time.
     pub unsafe fn get_mut_unchecked(&self) -> (&mut T, bool) {
-        let inner = &mut (*self.inner.as_ptr());
+        let inner = unsafe { &mut (*self.inner.as_ptr()) };
         (inner.value.get_mut(), inner.strong != 0)
     }
 }

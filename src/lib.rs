@@ -99,6 +99,7 @@
 //! [futures::unsync]: <https://docs.rs/futures/0.1.31/futures/unsync/index.html>
 
 #![deny(missing_docs)]
+#![deny(rust_2018_idioms, unsafe_op_in_unsafe_fn)]
 #![allow(clippy::result_unit_err)]
 
 mod bi_rc;
