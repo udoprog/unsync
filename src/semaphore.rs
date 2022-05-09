@@ -215,7 +215,7 @@ impl Semaphore {
     /// use std::task::Poll;
     ///
     /// use unsync::Semaphore;
-    /// # unsync::utils::noop_cx!(cx);
+    /// # let cx = &mut unsync::utils::noop_cx();
     ///
     /// let semaphore = Semaphore::new(1);
     ///
@@ -283,7 +283,7 @@ impl Semaphore {
     /// use unsync::Semaphore;
     ///
     /// # #[tokio::main(flavor = "current_thread")] async fn main() {
-    /// # unsync::utils::noop_cx!(cx);
+    /// # let cx = &mut unsync::utils::noop_cx();
     /// let semaphore = Semaphore::new(1);
     ///
     /// {
@@ -356,7 +356,7 @@ impl Semaphore {
 /// use std::task::Poll;
 ///
 /// use unsync::Semaphore;
-/// # unsync::utils::noop_cx!(cx);
+/// # let cx = &mut unsync::utils::noop_cx();
 ///
 /// let semaphore = Semaphore::new(1);
 ///
@@ -442,7 +442,7 @@ impl<'semaphore> Permit<'semaphore> {
     /// use std::task::Poll;
     ///
     /// use unsync::Semaphore;
-    /// # unsync::utils::noop_cx!(cx);
+    /// # let cx = &mut unsync::utils::noop_cx();
     ///
     /// let semaphore = Semaphore::new(1);
     ///
