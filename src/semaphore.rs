@@ -196,7 +196,6 @@ impl Semaphore {
     pub fn try_acquire(&self, to_acquire: usize) -> Option<Permit<'_>> {
         // If a task is already waiting for some permits, we mustn't steal it.
         if !self.waiters.borrow().is_empty() {
-            println!("not empty");
             return None;
         }
 
