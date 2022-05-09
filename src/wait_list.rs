@@ -2,8 +2,10 @@
 
 use std::cell::Cell;
 use std::cell::UnsafeCell;
+use std::error::Error;
 use std::fmt;
 use std::fmt::Debug;
+use std::fmt::Display;
 use std::future::Future;
 use std::mem::ManuallyDrop;
 use std::pin::Pin;
@@ -409,9 +411,12 @@ impl<'wait_list, I, O> Borrowed<'wait_list, I, O> {
     /// list.borrow().wake_one(()).unwrap_err();
     /// assert_eq!(list.borrow().head_input(), None);
     /// ```
-    pub fn wake_one(&mut self, output: O) -> Result<I, ()> {
+    pub fn wake_one(&mut self, output: O) -> Result<I, WakeOneError<O>> {
         let inner = self.inner_mut();
-        let head = inner.head.ok_or(())?;
+        let head = match inner.head {
+            Some(head) => head,
+            None => return Err(WakeOneError { output }),
+        };
 
         let (waker, input) = {
             let head = unsafe { &mut *head.as_ref().get() };
@@ -509,6 +514,22 @@ impl<I, O> Drop for WaitInner<'_, '_, I, O> {
         }
     }
 }
+
+/// Error returned by [`Borrowed::wake_one`], caused by when there are no waiters in the list.
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct WakeOneError<O> {
+    /// The output passed in to [`Borrowed::wake_one`].
+    pub output: O,
+}
+
+impl<O> Display for WakeOneError<O> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("no tasks were waiting")
+    }
+}
+
+impl<O: Debug> Error for WakeOneError<O> {}
 
 struct CloneWaker;
 

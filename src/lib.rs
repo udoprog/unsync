@@ -100,7 +100,6 @@
 
 #![deny(missing_docs)]
 #![deny(rust_2018_idioms, unsafe_op_in_unsafe_fn)]
-#![allow(clippy::result_unit_err)]
 
 // Utilities which are both used internally and in tests.
 #[doc(hidden)]
