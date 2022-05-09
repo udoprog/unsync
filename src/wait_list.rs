@@ -100,6 +100,62 @@ struct Inner<I, O> {
     tail: Option<NonNull<UnsafeCell<Waiter<I, O>>>>,
 }
 
+impl<I, O> Inner<I, O> {
+    /// Add a waiter node to the end of this linked list.
+    ///
+    /// # Safety
+    ///
+    /// - `waiter` must be the only reference to that object.
+    /// - `waiter` must be a valid pointer until it is removed.
+    unsafe fn enqueue(&mut self, waiter: &UnsafeCell<Waiter<I, O>>) {
+        // Set the previous waiter to the current tail of the queue, if there was one.
+        unsafe {
+            (*waiter.get()).prev = self.tail;
+        }
+
+        // Update the old tail's next pointer
+        if let Some(prev) = self.tail {
+            let prev = unsafe { &mut *prev.as_ref().get() };
+            debug_assert_eq!(prev.next, None);
+            prev.next = Some(NonNull::from(waiter));
+        }
+
+        // Set the waiter as the new tail of the linked list
+        self.tail = Some(NonNull::from(waiter));
+
+        // Also set it as the head if there isn't currently a head.
+        self.head.get_or_insert(NonNull::from(waiter));
+    }
+
+    /// Remove a waiter node from a position in the linked list.
+    ///
+    /// # Safety
+    ///
+    /// `waiter` must be a waiter in this queue.
+    unsafe fn dequeue(&mut self, waiter: &UnsafeCell<Waiter<I, O>>) {
+        let next = unsafe { (*waiter.get()).next };
+        let prev = unsafe { (*waiter.get()).prev };
+
+        // Update the pointer of the previous node, or the queue head
+        let prev_next_pointer = match prev {
+            Some(prev) => unsafe { &mut (*prev.as_ref().get()).next },
+            None => &mut self.head,
+        };
+
+        debug_assert_eq!(*prev_next_pointer, Some(NonNull::from(waiter)));
+        *prev_next_pointer = next;
+
+        // Update the pointer of the next node, or the queue tail
+        let next_prev_pointer = match next {
+            Some(next) => unsafe { &mut (*next.as_ref().get()).prev },
+            None => &mut self.tail,
+        };
+
+        debug_assert_eq!(*next_prev_pointer, Some(NonNull::from(waiter)));
+        *next_prev_pointer = prev;
+    }
+}
+
 /// A waiter in the above list.
 ///
 /// Each waiter in the list is wrapped in an `UnsafeCell` because there are
@@ -136,10 +192,12 @@ union State<I, O> {
 
 impl<I, O> Drop for Waiter<I, O> {
     fn drop(&mut self) {
-        if self.waker.is_some() {
-            unsafe { ManuallyDrop::drop(&mut self.state.input) };
-        } else {
-            unsafe { ManuallyDrop::drop(&mut self.state.output) };
+        unsafe {
+            if self.waker.is_some() {
+                ManuallyDrop::drop(&mut self.state.input);
+            } else {
+                ManuallyDrop::drop(&mut self.state.output);
+            }
         }
     }
 }
@@ -182,6 +240,7 @@ impl<I, O> WaitList<I, O> {
         if self.borrowed.replace(true) {
             return None;
         }
+
         Some(Borrowed { list: self })
     }
 
@@ -225,7 +284,9 @@ impl<I, O> WaitList<I, O> {
         });
 
         // SAFETY: `waiter` is a local variable so we have unique access to it.
-        unsafe { WaitInner::new(self, &waiter) }.await;
+        unsafe {
+            WaitInner::new(self, &waiter).await;
+        }
 
         let mut waiter = ManuallyDrop::new(waiter.into_inner());
         debug_assert!(waiter.waker.is_none());
@@ -283,61 +344,6 @@ impl<'wait_list, I, O> Borrowed<'wait_list, I, O> {
     pub fn head_input_mut(&mut self) -> Option<&mut I> {
         // SAFETY: We have set `borrowed`, so we can access any entry in the list.
         Some(unsafe { &mut (*self.head()?.get()).state.input })
-    }
-
-    /// Add a waiter node to the end of this linked list.
-    ///
-    /// # Safety
-    ///
-    /// - `waiter` must be the only reference to that object.
-    /// - `waiter` must be a valid pointer until it is removed.
-    unsafe fn enqueue(&mut self, waiter: &UnsafeCell<Waiter<I, O>>) {
-        // Set the previous waiter to the current tail of the queue, if there was one.
-        unsafe { &mut *waiter.get() }.prev = self.inner_mut().tail;
-
-        let waiter_ptr = NonNull::from(waiter);
-
-        // Update the old tail's next pointer
-        if let Some(prev) = self.inner_mut().tail {
-            let prev = unsafe { &mut *prev.as_ref().get() };
-            debug_assert_eq!(prev.next, None);
-            prev.next = Some(waiter_ptr);
-        }
-
-        // Set the waiter as the new tail of the linked list
-        self.inner_mut().tail = Some(waiter_ptr);
-
-        // Also set it as the head if there isn't currently a head.
-        self.inner_mut().head.get_or_insert(waiter_ptr);
-    }
-
-    /// Remove a waiter node from an arbitrary position in the linked list.
-    ///
-    /// # Safety
-    ///
-    /// - `waiter` must be a waiter in this queue.
-    unsafe fn dequeue(&mut self, waiter: &UnsafeCell<Waiter<I, O>>) {
-        let waiter_ptr = Some(NonNull::from(waiter));
-        let waiter = unsafe { &mut *waiter.get() };
-
-        let prev = waiter.prev;
-        let next = waiter.next;
-
-        // Update the pointer of the previous node, or the queue head
-        let prev_next_pointer = match waiter.prev {
-            Some(prev) => &mut unsafe { &mut *prev.as_ref().get() }.next,
-            None => &mut self.inner_mut().head,
-        };
-        debug_assert_eq!(*prev_next_pointer, waiter_ptr);
-        *prev_next_pointer = next;
-
-        // Update the pointer of the next node, or the queue tail
-        let next_prev_pointer = match waiter.next {
-            Some(next) => &mut unsafe { &mut *next.as_ref().get() }.prev,
-            None => &mut self.inner_mut().tail,
-        };
-        debug_assert_eq!(*next_prev_pointer, waiter_ptr);
-        *next_prev_pointer = prev;
     }
 
     /// Wake and dequeue the first waiter in the queue, if there is one.
@@ -404,27 +410,35 @@ impl<'wait_list, I, O> Borrowed<'wait_list, I, O> {
     /// assert_eq!(list.borrow().head_input(), None);
     /// ```
     pub fn wake_one(&mut self, output: O) -> Result<I, ()> {
-        let head = self.head().ok_or(())?;
+        let inner = self.inner_mut();
+        let head = inner.head.ok_or(())?;
 
-        let head_waiter = unsafe { &mut *head.get() };
+        let (waker, input) = {
+            let head = unsafe { &mut *head.as_ref().get() };
 
-        // Take the `Waker`, both for later waking and to mark it as woken
-        let waker = head_waiter.waker.take().unwrap();
+            // Take the `Waker`, both for later waking and to mark it as woken
+            let waker = match head.waker.take() {
+                Some(waker) => waker,
+                // Since the task is currently linked up to the wait list,
+                // this should not be a possible state. Add a hint
+                // indicating that it's impossible to improve code
+                // generation.
+                None => unreachable!(),
+            };
 
-        // Replace the old input with our output.
-        let input = unsafe { ManuallyDrop::take(&mut head_waiter.state.input) };
-        head_waiter.state.output = ManuallyDrop::new(output);
-
-        // Extend the lifetime of `head` so the `self` borrow below doesn't conflict with it.
-        // SAFETY: The safety contract of `enqueue` ensures the waiter lives long enough.
-        let head = unsafe { NonNull::from(head).as_ref() };
+            // Replace the old input with our output.
+            let input = unsafe { ManuallyDrop::take(&mut head.state.input) };
+            head.state.output = ManuallyDrop::new(output);
+            (waker, input)
+        };
 
         // Dequeue the first waiter now that it's not necessary to keep it in the queue.
-        unsafe { self.dequeue(head) };
+        unsafe {
+            inner.dequeue(head.as_ref());
+        }
 
         // Wake the waker last, to ensure that if this panics nothing goes wrong.
         waker.wake();
-
         Ok(input)
     }
 }
@@ -448,17 +462,22 @@ impl<'list, 'waiter, I, O> WaitInner<'list, 'waiter, I, O> {
     /// - `waiter` must be the only reference to that object.
     unsafe fn new(list: &'list WaitList<I, O>, waiter: &'waiter UnsafeCell<Waiter<I, O>>) -> Self {
         // SAFETY: Upheld by the caller.
-        unsafe { list.borrow().enqueue(waiter) };
+        unsafe {
+            list.borrow().inner_mut().enqueue(waiter);
+        }
+
         Self { list, waiter }
     }
 }
 
 impl<I, O> Future for WaitInner<'_, '_, I, O> {
     type Output = ();
+
     fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Self::Output> {
         let _guard = self.list.borrow();
 
-        let old_waker = &mut unsafe { &mut *self.waiter.get() }.waker;
+        let old_waker = unsafe { &mut (*self.waiter.get()).waker };
+
         match old_waker {
             // No need to update the waker
             Some(same_waker) if same_waker.will_wake(cx.waker()) => {}
@@ -469,6 +488,7 @@ impl<I, O> Future for WaitInner<'_, '_, I, O> {
             // No waker means we have been dequeued
             None => return Poll::Ready(()),
         }
+
         Poll::Pending
     }
 }
@@ -482,8 +502,10 @@ impl<I, O> Drop for WaitInner<'_, '_, I, O> {
             None => process::abort(),
         };
 
-        if unsafe { &*self.waiter.get() }.waker.is_some() {
-            unsafe { list.dequeue(self.waiter) };
+        unsafe {
+            if (*self.waiter.get()).waker.is_some() {
+                list.inner_mut().dequeue(self.waiter);
+            }
         }
     }
 }
@@ -492,6 +514,7 @@ struct CloneWaker;
 
 impl Future for CloneWaker {
     type Output = task::Waker;
+
     fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Self::Output> {
         Poll::Ready(cx.waker().clone())
     }
