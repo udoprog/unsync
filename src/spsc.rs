@@ -257,6 +257,7 @@ impl<'a, T> Future for Recv<'a, T> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = Pin::into_inner(self);
+
         unsafe {
             let (inner, both_present) = this.inner.get_mut_unchecked();
 

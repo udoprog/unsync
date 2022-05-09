@@ -14,8 +14,8 @@ use std::task::Poll;
 
 /// An intrusively linked list of futures waiting on an event.
 ///
-/// This is the most fundamental primitive to many of the synchronization utilities provided by
-/// this crate.
+/// This is the most fundamental primitive to many of the synchronization
+/// utilities provided by this crate.
 ///
 /// # Examples
 ///
@@ -102,12 +102,14 @@ struct Inner<I, O> {
 
 /// A waiter in the above list.
 ///
-/// Each waiter in the list is wrapped in an `UnsafeCell` because there are several places that may
-/// hold a reference two it (the linked list and the waiting future). The `UnsafeCell` is guarded
-/// by the `WaitList::borrowed` boolean.
+/// Each waiter in the list is wrapped in an `UnsafeCell` because there are
+/// several places that may hold a reference two it (the linked list and the
+/// waiting future). The `UnsafeCell` is guarded by the `WaitList::borrowed`
+/// boolean.
 ///
-/// Each `Waiter` is stored by its waiting future, and will be automatically removed from the
-/// linked list by `dequeue` when the future completes or is cancelled.
+/// Each `Waiter` is stored by its waiting future, and will be automatically
+/// removed from the linked list by `dequeue` when the future completes or is
+/// cancelled.
 struct Waiter<I, O> {
     /// The next waiter in the linked list.
     next: Option<NonNull<UnsafeCell<Waiter<I, O>>>>,
@@ -143,7 +145,15 @@ impl<I, O> Drop for Waiter<I, O> {
 }
 
 impl<I, O> WaitList<I, O> {
-    /// Create a new empty `WaitList`.
+    /// Construct a new empty [`WaitList`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use unsync::wait_list::WaitList;
+    ///
+    /// let list = WaitList::<(), ()>::new();
+    /// ```
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -155,8 +165,18 @@ impl<I, O> WaitList<I, O> {
         }
     }
 
-    /// Attempt to borrow uniquely the contents of this list, returning [`None`] if it is already
-    /// currently borrowed.
+    /// Attempt to borrow uniquely the contents of this list, returning [`None`]
+    /// if it is already currently borrowed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use unsync::wait_list::WaitList;
+    ///
+    /// let list = WaitList::<(), ()>::new();
+    /// let a = list.borrow();
+    /// assert!(list.try_borrow().is_none());
+    /// ```
     #[must_use]
     pub fn try_borrow(&self) -> Option<Borrowed<'_, I, O>> {
         if self.borrowed.replace(true) {
@@ -169,7 +189,16 @@ impl<I, O> WaitList<I, O> {
     ///
     /// # Panics
     ///
-    /// Panics if the list is already borrowed.
+    /// Panics if the list is already borrowed. For a non-panicking variant, see
+    /// [WaitList::try_borrow].
+    ///
+    /// ```should_panic
+    /// use unsync::wait_list::WaitList;
+    ///
+    /// let list = WaitList::<(), ()>::new();
+    /// let a = list.borrow();
+    /// let b = list.borrow(); // panics since `a` is live.
+    /// ```
     #[must_use]
     pub fn borrow(&self) -> Borrowed<'_, I, O> {
         self.try_borrow()
@@ -315,9 +344,65 @@ impl<'wait_list, I, O> Borrowed<'wait_list, I, O> {
     ///
     /// Returns ownership of that waiter's input value.
     ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::future::Future;
+    /// use std::task::Poll;
+    ///
+    /// use unsync::wait_list::WaitList;
+    ///
+    /// # unsync::utils::noop_cx!(cx);
+    /// let list = WaitList::<u32, u32>::new();
+    /// let mut future = Box::pin(list.wait(5));
+    /// assert_eq!(future.as_mut().poll(cx), Poll::Pending);
+    /// assert_eq!(list.borrow().head_input(), Some(&5));
+    ///
+    /// list.borrow().wake_one(6).unwrap();
+    /// assert_eq!(future.as_mut().poll(cx), Poll::Ready(6));
+    /// assert_eq!(list.borrow().head_input(), None);
+    /// ```
+    ///
+    /// Example waking multiple tasks:
+    ///
+    /// ```
+    /// use std::future::Future;
+    /// use std::task::Poll;
+    ///
+    /// use unsync::wait_list::WaitList;
+    ///
+    /// # unsync::utils::noop_cx!(cx);
+    /// let list = WaitList::<u32, u32>::new();
+    ///
+    /// let mut f1 = Box::pin(list.wait(1));
+    /// let mut f2 = Box::pin(list.wait(2));
+    /// let mut f3 = Box::pin(list.wait(3));
+    ///
+    /// assert_eq!(f1.as_mut().poll(cx), Poll::Pending);
+    /// assert_eq!(f2.as_mut().poll(cx), Poll::Pending);
+    ///
+    /// assert!(list.borrow().wake_one(1).is_ok());
+    /// assert_eq!(f3.as_mut().poll(cx), Poll::Pending);
+    ///
+    /// assert!(list.borrow().wake_one(2).is_ok());
+    /// assert!(list.borrow().wake_one(3).is_ok());
+    ///
+    /// assert_eq!(f1.as_mut().poll(cx), Poll::Ready(1));
+    /// assert_eq!(f2.as_mut().poll(cx), Poll::Ready(2));
+    /// assert_eq!(f3.as_mut().poll(cx), Poll::Ready(3));
+    /// ```
+    ///
     /// # Errors
     ///
     /// Returns an error when there are no wakers in the list.
+    ///
+    /// ```
+    /// use unsync::wait_list::WaitList;
+    ///
+    /// let list = WaitList::<(), ()>::new();
+    /// list.borrow().wake_one(()).unwrap_err();
+    /// assert_eq!(list.borrow().head_input(), None);
+    /// ```
     pub fn wake_one(&mut self, output: O) -> Result<I, ()> {
         let head = self.head().ok_or(())?;
 
@@ -404,6 +489,7 @@ impl<I, O> Drop for WaitInner<'_, '_, I, O> {
 }
 
 struct CloneWaker;
+
 impl Future for CloneWaker {
     type Output = task::Waker;
     fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Self::Output> {
@@ -417,68 +503,30 @@ mod tests {
     use std::task::Poll;
 
     use super::WaitList;
-    use crate::test_util::noop_cx;
-
-    #[test]
-    fn wake_empty() {
-        let list = <WaitList<(), ()>>::new();
-        list.borrow().wake_one(()).unwrap_err();
-        list.borrow().wake_one(()).unwrap_err();
-        assert_eq!(list.borrow().head_input(), None);
-    }
+    use crate::utils::noop_cx;
 
     #[test]
     fn cancel() {
         noop_cx!(cx);
 
-        let list = <WaitList<Box<u32>, ()>>::new();
-        let mut future = Box::pin(list.wait(Box::new(5)));
+        let list = WaitList::<u32, ()>::new();
+        let mut future = Box::pin(list.wait(5));
+
         for _ in 0..10 {
             assert_eq!(future.as_mut().poll(cx), Poll::Pending);
         }
+
         drop(future);
-    }
-
-    #[test]
-    fn wake_single() {
-        noop_cx!(cx);
-
-        let list = <WaitList<Box<u32>, Box<u32>>>::new();
-        let mut future = Box::pin(list.wait(Box::new(5)));
-        assert_eq!(future.as_mut().poll(cx), Poll::Pending);
-        assert_eq!(**list.borrow().head_input().unwrap(), 5);
-
-        list.borrow().wake_one(Box::new(6)).unwrap();
-        assert_eq!(future.as_mut().poll(cx), Poll::Ready(Box::new(6)));
-        assert_eq!(list.borrow().head_input(), None);
-    }
-
-    #[test]
-    fn wake_multiple() {
-        noop_cx!(cx);
-        let list = <WaitList<Box<u32>, Box<u32>>>::new();
-        let mut f1 = Box::pin(list.wait(Box::new(1)));
-        let mut f2 = Box::pin(list.wait(Box::new(2)));
-        let mut f3 = Box::pin(list.wait(Box::new(3)));
-        assert_eq!(f1.as_mut().poll(cx), Poll::Pending);
-        assert_eq!(f2.as_mut().poll(cx), Poll::Pending);
-        list.borrow().wake_one(Box::new(11)).unwrap();
-        assert_eq!(f3.as_mut().poll(cx), Poll::Pending);
-        list.borrow().wake_one(Box::new(12)).unwrap();
-        list.borrow().wake_one(Box::new(99)).unwrap();
-        list.borrow().wake_one(Box::new(99)).unwrap_err();
-        assert_eq!(f2.as_mut().poll(cx), Poll::Ready(Box::new(12)));
-        assert_eq!(f1.as_mut().poll(cx), Poll::Ready(Box::new(11)));
     }
 
     #[test]
     fn drop_in_middle() {
         noop_cx!(cx);
 
-        let list = <WaitList<Box<u32>, ()>>::new();
-        let mut f1 = Box::pin(list.wait(Box::new(1)));
-        let mut f2 = Box::pin(list.wait(Box::new(2)));
-        let mut f3 = Box::pin(list.wait(Box::new(3)));
+        let list = WaitList::<u32, ()>::new();
+        let mut f1 = Box::pin(list.wait(1));
+        let mut f2 = Box::pin(list.wait(2));
+        let mut f3 = Box::pin(list.wait(3));
         assert_eq!(f1.as_mut().poll(cx), Poll::Pending);
         assert_eq!(f2.as_mut().poll(cx), Poll::Pending);
         assert_eq!(f3.as_mut().poll(cx), Poll::Pending);

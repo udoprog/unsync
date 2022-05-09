@@ -71,16 +71,43 @@ impl<T> OnceCell<T> {
     /// # Examples
     ///
     /// ```
-    /// use unsync::once_cell;
-    /// use unsync::once_cell::OnceCell;
+    /// use std::future::Future;
+    /// use std::task::Poll;
+    ///
+    /// use unsync::once_cell::{OnceCell, SetResult};
+    /// # unsync::utils::noop_cx!(cx);
     ///
     /// let cell = OnceCell::new();
+    ///
+    /// let mut initializer = Box::pin(cell.get_or_init(|| async {
+    ///     tokio::task::yield_now().await;
+    ///     5
+    /// }));
+    ///
+    /// assert_eq!(initializer.as_mut().poll(cx), Poll::Pending);
+    /// // Indicates that the cell is currently initializing.
+    /// assert_eq!(cell.set(6), SetResult::Initializing(6));
+    ///
+    /// assert_eq!(initializer.as_mut().poll(cx), Poll::Ready(&5));
+    /// // Indicates that the cell has been initialized.
+    /// assert_eq!(cell.set(6), SetResult::Initialized(&5, 6));
+    /// ```
+    ///
+    /// Example showcasing a failing insertion through
+    /// [OnceCell::get_or_try_init] being superseeded by a call to
+    /// [OnceCell::set].
+    ///
+    /// ```
+    /// use unsync::once_cell::{OnceCell, SetResult};
+    ///
+    /// # #[tokio::main(flavor = "current_thread")] async fn main() {
+    /// let cell = OnceCell::<i32>::new();
+    ///
+    /// assert_eq!(cell.get_or_try_init(|| async { Err("error") }).await, Err("error"));
+    ///
     /// assert_eq!(cell.get(), None);
-    ///
-    /// cell.set(5).unwrap();
-    /// assert_eq!(cell.get(), Some(&5));
-    ///
-    /// assert_eq!(cell.set(6), once_cell::SetResult::Initialized(&5, 6));
+    /// assert_eq!(cell.set(5), SetResult::Ok(&5));
+    /// # }
     /// ```
     pub fn set(&self, value: T) -> SetResult<'_, T> {
         match unsafe { &*self.state.get() } {
@@ -111,6 +138,34 @@ impl<T> OnceCell<T> {
     /// assert_eq!(cell.get(), Some(&5));
     /// assert_eq!(cell.insert(6).await, Err((&5, 6)));
     /// # }
+    /// ```
+    ///
+    /// Example showing a call to [OnceCell::insert] which supersedes a failing
+    /// [OnceCell::get_or_try_init].
+    ///
+    /// ```
+    /// use std::future::Future;
+    /// use std::task::Poll;
+    ///
+    /// use unsync::once_cell::{OnceCell, SetResult};
+    /// # unsync::utils::noop_cx!(cx);
+    ///
+    /// let cell = OnceCell::<i32>::new();
+    ///
+    /// let mut failer = Box::pin(cell.get_or_try_init(|| async {
+    ///     tokio::task::yield_now().await;
+    ///     Err("error")
+    /// }));
+    ///
+    /// let mut succeeder = Box::pin(cell.insert(10));
+    ///
+    /// assert_eq!(failer.as_mut().poll(cx), Poll::Pending);
+    /// assert_eq!(succeeder.as_mut().poll(cx), Poll::Pending);
+    ///
+    /// assert_eq!(failer.as_mut().poll(cx), Poll::Ready(Err("error")));
+    /// assert_eq!(cell.set(0), SetResult::Initializing(0));
+    /// assert_eq!(succeeder.as_mut().poll(cx), Poll::Ready(Ok(&10)));
+    /// assert_eq!(cell.get(), Some(&10));
     /// ```
     pub async fn insert(&self, value: T) -> Result<&T, (&T, T)> {
         let mut value = Some(value);
@@ -192,6 +247,7 @@ impl<T> OnceCell<T> {
         // This guard's Drop implementation is activated when `f` errors or panics and performs the
         // necessary cleanup of notifying others that we have failed.
         struct Guard<'once_cell, T>(&'once_cell OnceCell<T>);
+
         impl<T> Drop for Guard<'_, T> {
             fn drop(&mut self) {
                 // We failed to initialize, so attempt to pass the job of initialization onto
@@ -341,32 +397,12 @@ mod tests {
     use std::task::Poll;
 
     use super::OnceCell;
-    use super::SetResult;
-    use crate::test_util::noop_cx;
-
-    #[test]
-    fn set_when_initializing() {
-        noop_cx!(cx);
-        let cell = OnceCell::new();
-
-        let mut initializer = Box::pin(cell.get_or_init(|| async {
-            tokio::task::yield_now().await;
-            Box::new(5)
-        }));
-
-        assert_eq!(initializer.as_mut().poll(cx), Poll::Pending);
-        assert_eq!(cell.set(Box::new(6)), SetResult::Initializing(Box::new(6)));
-
-        assert_eq!(initializer.as_mut().poll(cx), Poll::Ready(&Box::new(5)));
-        assert_eq!(
-            cell.set(Box::new(6)),
-            SetResult::Initialized(&Box::new(5), Box::new(6))
-        );
-    }
+    use crate::utils::noop_cx;
 
     #[test]
     fn insert_when_initializing() {
         noop_cx!(cx);
+
         let cell = OnceCell::new();
 
         let iters = 3;
@@ -375,55 +411,17 @@ mod tests {
             for _ in 0..iters {
                 tokio::task::yield_now().await;
             }
-            Box::new(5)
+            5
         }));
 
-        let mut inserter = Box::pin(cell.insert(Box::new(6)));
+        let mut inserter = Box::pin(cell.insert(6));
 
         for _ in 0..iters {
             assert_eq!(initializer.as_mut().poll(cx), Poll::Pending);
             assert_eq!(inserter.as_mut().poll(cx), Poll::Pending);
         }
 
-        assert_eq!(initializer.as_mut().poll(cx), Poll::Ready(&Box::new(5)));
-        assert_eq!(
-            inserter.as_mut().poll(cx),
-            Poll::Ready(Err((&Box::new(5), Box::new(6))))
-        );
-    }
-
-    #[tokio::test]
-    async fn init_fails_no_handoff() {
-        let cell = <OnceCell<Box<i32>>>::new();
-
-        assert_eq!(
-            cell.get_or_try_init(|| async { Err("error".to_owned()) })
-                .await,
-            Err("error".to_owned()),
-        );
-
-        assert_eq!(cell.get(), None);
-        assert_eq!(**cell.set(Box::new(5)).unwrap(), 5);
-    }
-
-    #[test]
-    fn init_fails_handoff() {
-        noop_cx!(cx);
-
-        let cell = <OnceCell<Box<i32>>>::new();
-
-        let mut failer = Box::pin(cell.get_or_try_init(|| async {
-            tokio::task::yield_now().await;
-            Err("e".to_owned())
-        }));
-        let mut succeeder = Box::pin(cell.insert(Box::new(10)));
-
-        assert_eq!(failer.as_mut().poll(cx), Poll::Pending);
-        assert_eq!(succeeder.as_mut().poll(cx), Poll::Pending);
-
-        assert_eq!(failer.as_mut().poll(cx), Poll::Ready(Err("e".to_owned())));
-        assert_eq!(cell.set(Box::new(0)), SetResult::Initializing(Box::new(0)));
-        assert_eq!(succeeder.as_mut().poll(cx), Poll::Ready(Ok(&Box::new(10))));
-        assert_eq!(cell.get(), Some(&Box::new(10)));
+        assert_eq!(initializer.as_mut().poll(cx), Poll::Ready(&5));
+        assert_eq!(inserter.as_mut().poll(cx), Poll::Ready(Err((&5, 6))));
     }
 }

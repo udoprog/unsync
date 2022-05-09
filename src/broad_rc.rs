@@ -57,11 +57,10 @@ impl<T> BroadRc<T> {
     }
 
     /// Construct a new weak reference.
-    pub fn weak(&self) -> BroadWeak<T> {
+    pub(crate) fn weak(&self) -> BroadWeak<T> {
         unsafe {
             let mut inner = &mut (*self.inner.as_ptr());
-            inner.weak += 1;
-
+            inner.weak = crate::utils::checked_increment(inner.weak);
             BroadWeak { inner: self.inner }
         }
     }
