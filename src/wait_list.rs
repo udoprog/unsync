@@ -358,7 +358,7 @@ impl<'wait_list, I, O> Borrowed<'wait_list, I, O> {
     ///
     /// use unsync::wait_list::WaitList;
     ///
-    /// # unsync::utils::noop_cx!(cx);
+    /// # let cx = &mut unsync::utils::noop_cx();
     /// let list = WaitList::<u32, u32>::new();
     /// let mut future = Box::pin(list.wait(5));
     /// assert_eq!(future.as_mut().poll(cx), Poll::Pending);
@@ -377,7 +377,7 @@ impl<'wait_list, I, O> Borrowed<'wait_list, I, O> {
     ///
     /// use unsync::wait_list::WaitList;
     ///
-    /// # unsync::utils::noop_cx!(cx);
+    /// # let cx = &mut unsync::utils::noop_cx();
     /// let list = WaitList::<u32, u32>::new();
     ///
     /// let mut f1 = Box::pin(list.wait(1));
@@ -530,7 +530,7 @@ mod tests {
 
     #[test]
     fn cancel() {
-        noop_cx!(cx);
+        let cx = &mut noop_cx();
 
         let list = WaitList::<u32, ()>::new();
         let mut future = Box::pin(list.wait(5));
@@ -544,7 +544,7 @@ mod tests {
 
     #[test]
     fn drop_in_middle() {
-        noop_cx!(cx);
+        let cx = &mut noop_cx();
 
         let list = WaitList::<u32, ()>::new();
         let mut f1 = Box::pin(list.wait(1));

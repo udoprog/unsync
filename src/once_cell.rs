@@ -75,7 +75,7 @@ impl<T> OnceCell<T> {
     /// use std::task::Poll;
     ///
     /// use unsync::once_cell::{OnceCell, SetResult};
-    /// # unsync::utils::noop_cx!(cx);
+    /// # let cx = &mut unsync::utils::noop_cx();
     ///
     /// let cell = OnceCell::new();
     ///
@@ -148,7 +148,7 @@ impl<T> OnceCell<T> {
     /// use std::task::Poll;
     ///
     /// use unsync::once_cell::{OnceCell, SetResult};
-    /// # unsync::utils::noop_cx!(cx);
+    /// # let cx = &mut unsync::utils::noop_cx();
     ///
     /// let cell = OnceCell::<i32>::new();
     ///
@@ -401,7 +401,7 @@ mod tests {
 
     #[test]
     fn insert_when_initializing() {
-        noop_cx!(cx);
+        let cx = &mut noop_cx();
 
         let cell = OnceCell::new();
 

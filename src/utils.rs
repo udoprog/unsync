@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::mem;
+use std::ptr;
 use std::task;
 
 /// Increment `value` assuming that an overflow is unlikely. Calls
@@ -11,23 +12,23 @@ pub(crate) fn checked_increment(value: usize) -> usize {
     value + 1
 }
 
-/// Declare a no-op context named `$cx` which can be used for testing.
-#[macro_export]
-macro_rules! noop_cx {
-    ($cx:ident) => {
-        let waker = $crate::utils::noop_waker();
-        let $cx = &mut std::task::Context::from_waker(&waker);
-    };
-}
+/// Create a no-op context which can be used for testing.
+pub fn noop_cx() -> task::Context<'static> {
+    const VTABLE: task::RawWakerVTable = task::RawWakerVTable::new(
+        // clone
+        |_| RAW,
+        // wake
+        |_| {},
+        // wake_by_ref
+        |_| {},
+        // drop
+        |_| {},
+    );
+    const RAW: task::RawWaker = task::RawWaker::new(ptr::null(), &VTABLE);
 
-#[doc(hidden)]
-pub use noop_cx;
+    // `Waker::from_raw` is unfortunately not `const fn` so it can't be used
+    // SAFETY: `Waker` is `#[repr(transparent)]` over `RawWaker`
+    static WAKER: task::Waker = unsafe { mem::transmute::<task::RawWaker, task::Waker>(RAW) };
 
-#[doc(hidden)]
-pub fn noop_waker() -> task::Waker {
-    struct Noop;
-    impl task::Wake for Noop {
-        fn wake(self: Arc<Self>) {}
-    }
-    task::Waker::from(Arc::new(Noop))
+    task::Context::from_waker(&WAKER)
 }
