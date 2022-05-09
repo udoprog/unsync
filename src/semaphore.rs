@@ -57,7 +57,7 @@ pub struct Semaphore {
 }
 
 /// Ways in which a waiter can be woken.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 enum WakeUp {
     /// The waiter was fairly given the number of permits it requested by `add_permits_fair`.
     Fair,
