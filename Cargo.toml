@@ -9,7 +9,7 @@ readme = "README.md"
 homepage = "https://github.com/udoprog/unsync"
 repository = "https://github.com/udoprog/unsync"
 license = "MIT/Apache-2.0"
-keywords = ["io", "async", "non-blocking", "futures"]
+keywords = ["async", "futures", "io", "non-blocking"]
 categories = ["asynchronous"]
 
 [features]
