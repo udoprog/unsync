@@ -7,34 +7,39 @@ on:
       - main
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v3
-    - run: rustup toolchain install stable --profile minimal
-    - run: cargo build --tests --benches --examples --all-targets
-
   test:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
-    - run: rustup toolchain install stable --profile minimal
-    - run: cargo check --tests --benches
-    - run: cargo test
+    - uses: dtolnay/rust-toolchain@stable
+    - run: cargo test --workspace --all-targets
 
-  miri:
+  clippy:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
-    - run: rustup toolchain install nightly --profile minimal --component miri
-    - run: cargo +nightly miri test
-      env:
-        RUSTFLAGS: -Zrandomize-layout
-        MIRIFLAGS: -Zmiri-strict-provenance -Zmiri-symbolic-alignment-check
+    - uses: dtolnay/rust-toolchain@1.68
+      with:
+        components: clippy
+    - run: cargo clippy --workspace --all-features --all-targets -- -D warnings
 
   rustfmt:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
-    - run: rustup toolchain install stable --profile minimal --component rustfmt
-    - run: cargo fmt --check
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt
+    - run: cargo fmt --check --all
+
+  miri:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: miri
+    - run: cargo miri test --all-targets
+      env:
+        RUSTFLAGS: -Z randomize-layout
+        MIRIFLAGS: -Z miri-strict-provenance -Z miri-symbolic-alignment-check
