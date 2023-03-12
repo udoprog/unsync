@@ -1,28 +1,24 @@
 name: CI
 
-on: [push, pull_request]
+on:
+  pull_request: {}
+  push:
+    branches:
+      - main
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
-    - uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        override: true
-        profile: minimal
+    - run: rustup toolchain install stable --profile minimal
     - run: cargo build --tests --benches --examples --all-targets
 
   test:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
-    - uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        override: true
-        profile: minimal
+    - run: rustup toolchain install stable --profile minimal
     - run: cargo check --tests --benches
     - run: cargo test
 
@@ -30,12 +26,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
-    - uses: actions-rs/toolchain@v1
-      with:
-        toolchain: nightly
-        override: true
-        components: miri
-    - run: cargo miri test
+    - run: rustup toolchain install nightly --profile minimal --component miri
+    - run: cargo +nightly miri test
       env:
         RUSTFLAGS: -Zrandomize-layout
         MIRIFLAGS: -Zmiri-strict-provenance -Zmiri-symbolic-alignment-check
@@ -44,9 +36,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
-    - uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        override: true
-        components: rustfmt
+    - run: rustup toolchain install stable --profile minimal --component rustfmt
     - run: cargo fmt --check
