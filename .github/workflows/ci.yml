@@ -41,5 +41,5 @@ jobs:
         components: miri
     - run: cargo miri test --all-targets
       env:
-        RUSTFLAGS: -Z randomize-layout
-        MIRIFLAGS: -Z miri-strict-provenance -Z miri-symbolic-alignment-check
+        RUSTFLAGS: -Zrandomize-layout
+        MIRIFLAGS: -Zmiri-strict-provenance -Zmiri-symbolic-alignment-check

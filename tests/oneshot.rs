@@ -55,7 +55,7 @@ async fn test_oneshot() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await;
 
-    let () = a?;
+    a?;
     let actual = b?;
 
     let expected = (0..SIZE).collect::<Vec<_>>();

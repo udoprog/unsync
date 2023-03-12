@@ -57,7 +57,7 @@ async fn test_broadcast() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await;
 
-    let () = b?;
+    b?;
 
     let expected = (0..SIZE).collect::<Vec<_>>();
 

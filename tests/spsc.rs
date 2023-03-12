@@ -44,7 +44,7 @@ async fn test_spsc() -> Result<(), Box<dyn std::error::Error>> {
         .await;
 
     let actual = a?;
-    let () = b?;
+    b?;
 
     let expected = (0..SIZE).collect::<Vec<_>>();
 

@@ -68,7 +68,7 @@ async fn test_unsync(size: u32) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
         })
         .await;
 
-    let () = a?;
+    a?;
     let actual = b?;
 
     let expected = (0..size).collect::<Vec<_>>();
@@ -125,7 +125,7 @@ async fn test_tokio(size: u32) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
         })
         .await;
 
-    let () = a?;
+    a?;
     let actual = b?;
 
     let expected = (0..size).collect::<Vec<_>>();
