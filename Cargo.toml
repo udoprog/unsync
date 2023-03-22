@@ -3,6 +3,7 @@ name = "unsync"
 version = "0.1.1"
 authors = ["John-John Tedro <udoprog@tedro.se>"]
 edition = "2021"
+rust-version = "1.58"
 description = "Unsynchronized synchronization primitives for async Rust."
 documentation = "https://docs.rs/unsync"
 readme = "README.md"
