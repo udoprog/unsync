@@ -49,7 +49,7 @@
 //! Add the following to your `Cargo.toml`:
 //!
 //! ```toml
-//! unsync = "0.1.1"
+//! unsync = "0.1.2"
 //! ```
 //!
 //! <br>
