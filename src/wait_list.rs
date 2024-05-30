@@ -296,6 +296,13 @@ impl<I, O> WaitList<I, O> {
     }
 }
 
+impl<I, O> Default for WaitList<I, O> {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<I, O> Debug for WaitList<I, O> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.pad("WaitList")
