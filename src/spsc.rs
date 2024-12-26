@@ -162,7 +162,7 @@ struct Send<'a, T> {
     value: Option<T>,
 }
 
-impl<'a, T> Future for Send<'a, T> {
+impl<T> Future for Send<'_, T> {
     type Output = Result<(), SendError<T>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -252,7 +252,7 @@ struct Recv<'a, T> {
     inner: &'a BiRc<Shared<T>>,
 }
 
-impl<'a, T> Future for Recv<'a, T> {
+impl<T> Future for Recv<'_, T> {
     type Output = Option<T>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {

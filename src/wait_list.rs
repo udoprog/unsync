@@ -317,7 +317,7 @@ pub struct Borrowed<'wait_list, I, O> {
     list: &'wait_list WaitList<I, O>,
 }
 
-impl<'wait_list, I, O> Borrowed<'wait_list, I, O> {
+impl<I, O> Borrowed<'_, I, O> {
     fn inner(&self) -> &Inner<I, O> {
         // SAFETY: In order to create this type, the `WaitList` must be borrowed uniquely, so we
         // effectively have an `&mut Inner<T>`.

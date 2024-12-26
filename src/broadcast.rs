@@ -281,7 +281,7 @@ struct Send<'a, T> {
     value: T,
 }
 
-impl<'a, T> Future for Send<'a, T>
+impl<T> Future for Send<'_, T>
 where
     T: Clone,
 {
@@ -339,7 +339,7 @@ where
     }
 }
 
-impl<'a, T> Unpin for Send<'a, T> {}
+impl<T> Unpin for Send<'_, T> {}
 
 /// Receiver end of the channel created through [channel].
 pub struct Receiver<T> {
@@ -388,7 +388,7 @@ struct Recv<'a, T> {
     receiver: &'a mut Receiver<T>,
 }
 
-impl<'a, T> Future for Recv<'a, T> {
+impl<T> Future for Recv<'_, T> {
     type Output = Option<T>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
