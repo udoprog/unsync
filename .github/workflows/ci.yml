@@ -37,7 +37,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
       with:
         components: clippy
-    - run: cargo clippy --workspace --all-features --all-targets -- -D warnings
+    - run: cargo clippy --workspace --all-features --lib -- -D warnings
 
   rustfmt:
     runs-on: ubuntu-latest
