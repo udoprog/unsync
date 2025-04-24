@@ -16,8 +16,8 @@ use crate::wait_list::WaitList;
 /// aspects of fairness to consider:
 ///
 /// 1. Whether a task that wants fewer permits can obtain those permits while a
-///     task that wants more permits waits. The default [`acquire`] method does
-///     not allow this, but [`acquire_unfair`] does.
+///    task that wants more permits waits. The default [`acquire`] method does
+///    not allow this, but [`acquire_unfair`] does.
 /// 2. Whether a task can steal the permits from another task if that second
 ///    task has not been scheduled yet (so the permits have been released but
 ///    have yet to be acquired). This kind of unfairness improves throughput for
