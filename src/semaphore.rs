@@ -70,10 +70,26 @@ enum Fairness {
 /// The value handed to a woken waiter through the wait list.
 enum WakeUp {
     /// Permits may be available; the waiter must re-contend via `try_acquire`.
-    Unfair,
+    /// The token passes the wakeup on if this waiter is cancelled before doing so.
+    Unfair(UnfairWoken),
     /// The requested permits were granted directly. The grant holds them until
     /// the waiter turns it into a `Permit`.
     Fair(FairGrant),
+}
+
+/// Handed to a waiter woken by an unfair release so it can contend for permits.
+/// If the waiter is cancelled before contending, this `Drop` re-runs the wake so
+/// the permits are offered to the next waiter rather than left stranded.
+struct UnfairWoken {
+    semaphore: *const Semaphore,
+}
+
+impl Drop for UnfairWoken {
+    fn drop(&mut self) {
+        // SAFETY: the semaphore outlives every waiter holding a token.
+        let semaphore = unsafe { &*self.semaphore };
+        semaphore.release_permits(0, Fairness::Unfair);
+    }
 }
 
 /// Permits reserved for a specific waiter by a fair release. If the waiter
@@ -288,12 +304,14 @@ impl Semaphore {
             }
 
             match self.waiters.wait(to_acquire).await {
-                WakeUp::Unfair => {
+                WakeUp::Unfair(token) => {
                     // We were woken from the head of the queue, so take the
-                    // permits without deferring to waiters still queued behind
-                    // us. Plain `try_acquire` would refuse here because the queue
-                    // is non-empty, leaving the released permits unclaimed.
+                    // permits without deferring to waiters still queued behind us
+                    // (plain `try_acquire` would refuse while the queue is
+                    // non-empty). On success forget the token; otherwise let it
+                    // drop, re-waking the next waiter so the wakeup isn't lost.
                     if let Some(guard) = self.try_acquire_unfair(to_acquire) {
+                        mem::forget(token);
                         break guard;
                     }
                 }
@@ -346,7 +364,15 @@ impl Semaphore {
             }
 
             match self.waiters.wait(to_acquire).await {
-                WakeUp::Unfair => continue,
+                WakeUp::Unfair(token) => {
+                    // Already at the head; take the permits now. On success
+                    // forget the token, otherwise let it drop and re-wake the
+                    // next waiter so the wakeup isn't lost.
+                    if let Some(guard) = self.try_acquire_unfair(to_acquire) {
+                        mem::forget(token);
+                        break guard;
+                    }
+                }
                 WakeUp::Fair(grant) => {
                     // The `Permit` below owns these permits now; forget the grant
                     // so they aren't released twice.
@@ -382,7 +408,7 @@ impl Semaphore {
                         permits: wanted_permits,
                     })
                 }
-                Fairness::Unfair => WakeUp::Unfair,
+                Fairness::Unfair => WakeUp::Unfair(UnfairWoken { semaphore: self }),
             };
 
             if waiters.wake_one(wake).is_err() {
@@ -587,5 +613,53 @@ mod tests {
 
         drop(initial);
         assert!(f1.as_mut().poll(cx).is_ready());
+    }
+
+    // Cancelling a woken waiter must not strand the permit it was woken for; the
+    // next waiter in line must still receive it.
+    #[test]
+    fn cancelled_woken_waiter_does_not_strand_permit() {
+        let cx = &mut noop_cx();
+        let sem = Semaphore::new(1);
+        let initial = sem.try_acquire(1).unwrap();
+
+        let mut w1 = Box::pin(sem.acquire(1));
+        let mut w2 = Box::pin(sem.acquire(1));
+        assert!(w1.as_mut().poll(cx).is_pending());
+        assert!(w2.as_mut().poll(cx).is_pending());
+
+        // Releasing one permit wakes the front waiter, `w1`.
+        drop(initial);
+
+        // `w1` is cancelled before it can take the permit.
+        drop(w1);
+
+        // The permit must flow to `w2`, not be lost.
+        assert!(w2.as_mut().poll(cx).is_ready());
+    }
+
+    // The re-woken permit must reach a still-queued waiter even when several are
+    // waiting behind the cancelled one.
+    #[test]
+    fn cancelled_woken_waiter_rewakes_across_queue() {
+        let cx = &mut noop_cx();
+        let sem = Semaphore::new(2);
+        let initial = sem.try_acquire(2).unwrap();
+
+        let mut w1 = Box::pin(sem.acquire(1));
+        let mut w2 = Box::pin(sem.acquire(1));
+        let mut w3 = Box::pin(sem.acquire(1));
+        assert!(w1.as_mut().poll(cx).is_pending());
+        assert!(w2.as_mut().poll(cx).is_pending());
+        assert!(w3.as_mut().poll(cx).is_pending());
+
+        // Releasing both permits wakes w1 and w2; w3 stays queued.
+        drop(initial);
+
+        // Cancelling w1 must hand its permit on to w3.
+        drop(w1);
+
+        assert!(w2.as_mut().poll(cx).is_ready());
+        assert!(w3.as_mut().poll(cx).is_ready());
     }
 }
