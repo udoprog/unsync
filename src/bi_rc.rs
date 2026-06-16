@@ -3,15 +3,19 @@
 //! This is a very simple reference-counted data structure who's purpose is
 //! exactly two things:
 //! * Ensure that the guarded value is not de-allocated until all live
-//!   references of [BiRc] have been dropped.
-//! * Be able to flag when any of the two references of [BiRc] have been
+//!   references of [`BiRc`] have been dropped.
+//! * Be able to flag when any of the two references of [`BiRc`] have been
 //!   dropped.
 //!
-//! Now it's true that this API is roughly available through [Rc][std::rc::Rc],
-//! but it would be more awkward to wrap to use correctly.
+//! Now it's true that this API is roughly available through [`Rc`], but it
+//! would be more awkward to wrap to use correctly.
+//!
+//! [`Rc`]: std::rc::Rc
 
-use std::cell::UnsafeCell;
-use std::ptr::NonNull;
+use core::cell::UnsafeCell;
+use core::ptr::NonNull;
+
+use alloc::boxed::Box;
 
 struct Inner<T> {
     /// The interior value being reference counted.

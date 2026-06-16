@@ -2,8 +2,8 @@
 name = "unsync"
 version = "0.1.2"
 authors = ["John-John Tedro <udoprog@tedro.se>"]
-edition = "2021"
-rust-version = "1.58"
+edition = "2024"
+rust-version = "1.85.0"
 description = "Unsynchronized synchronization primitives for async Rust."
 documentation = "https://docs.rs/unsync"
 readme = "README.md"
@@ -14,11 +14,12 @@ keywords = ["async", "futures", "io", "non-blocking"]
 categories = ["asynchronous"]
 
 [features]
-default = ["std"]
+default = ["std", "alloc"]
 std = []
+alloc = ["dep:slab"]
 
 [dependencies]
-slab = "0.4.8"
+slab = { version = "0.4.8", default-features = false, optional = true }
 
 [dev-dependencies]
 criterion = "0.4.0"
@@ -27,3 +28,7 @@ tokio = { version = "1.27.0", features = ["macros", "rt", "sync"] }
 [[bench]]
 name = "channels"
 harness = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

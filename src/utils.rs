@@ -1,12 +1,23 @@
-use std::mem;
-use std::ptr;
-use std::task;
+use core::mem;
+use core::ptr;
+use core::task;
 
-/// Increment `value` assuming that an overflow is unlikely. Calls
-/// [std::process::abort] on overflows.
+#[cfg(feature = "std")]
+pub(crate) fn abort() -> ! {
+    std::process::abort()
+}
+
+#[cfg(not(feature = "std"))]
+pub(crate) fn abort() -> ! {
+    loop {}
+}
+
+/// Increment `value` assuming that an overflow is unlikely. Calls [`abort`] on
+/// overflows.
+#[cfg(feature = "alloc")]
 pub(crate) fn checked_increment(value: usize) -> usize {
     if value == usize::MAX {
-        std::process::abort()
+        abort()
     }
 
     value + 1
@@ -24,6 +35,7 @@ pub fn noop_cx() -> task::Context<'static> {
         // drop
         |_| {},
     );
+
     const RAW: task::RawWaker = task::RawWaker::new(ptr::null(), &VTABLE);
 
     // `Waker::from_raw` is unfortunately not `const fn` so it can't be used

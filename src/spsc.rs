@@ -6,12 +6,13 @@
 //! This allocates storage internally to maintain shared state between the
 //! [Sender] and [Receiver].
 
-use std::collections::VecDeque;
-use std::error::Error;
-use std::fmt::{self, Debug, Display, Formatter};
-use std::future::Future;
-use std::pin::Pin;
-use std::task::{Context, Poll, Waker};
+use core::error::Error;
+use core::fmt::{self, Debug, Display, Formatter};
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll, Waker};
+
+use alloc::collections::VecDeque;
 
 use crate::bi_rc::BiRc;
 
@@ -30,7 +31,7 @@ impl<T> Error for SendError<T> where T: Debug {}
 /// Interior shared state.
 ///
 /// Note that we maintain two sets of waker to avoid having to clone the waker
-/// associated with the channel unecessarily through the [Waker::will_wake]
+/// associated with the channel unecessarily through the [`Waker::will_wake`]
 /// optimization. This is done because it's presumed that the channel will be
 /// re-used.
 struct Shared<T> {
@@ -51,7 +52,7 @@ impl<T> Shared<T> {
     }
 }
 
-/// Sender end of the channel created through [channel].
+/// Sender end of the channel created through [`channel`].
 pub struct Sender<T> {
     inner: BiRc<Shared<T>>,
 }
@@ -62,7 +63,7 @@ impl<T> Sender<T> {
     /// This will succeed if there is sufficient capacity to send, but fail
     /// otherwise.
     ///
-    /// Note: don't attempt to use this as an optimization over [Sender::send]
+    /// Note: don't attempt to use this as an optimization over [`Sender::send`]
     /// since it already performs this operation internally as needed.
     ///
     /// # Examples
@@ -351,10 +352,13 @@ pub fn unbounded<T>() -> (Sender<T>, Receiver<T>) {
 
 #[cfg(test)]
 mod tests {
-    use std::future::Future;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
-    use std::task::{Context, Poll, Wake, Waker};
+    use core::future::Future;
+    use core::sync::atomic::{AtomicBool, Ordering};
+    use core::task::{Context, Poll, Waker};
+
+    use alloc::boxed::Box;
+    use alloc::sync::Arc;
+    use alloc::task::Wake;
 
     use super::channel;
     use crate::utils::noop_cx;
@@ -365,6 +369,7 @@ mod tests {
         fn wake(self: Arc<Self>) {
             self.0.store(true, Ordering::SeqCst);
         }
+
         fn wake_by_ref(self: &Arc<Self>) {
             self.0.store(true, Ordering::SeqCst);
         }
@@ -382,14 +387,16 @@ mod tests {
         let w2 = Waker::from(second.clone());
 
         let mut fut = Box::pin(rx.recv());
-        assert!(fut
-            .as_mut()
-            .poll(&mut Context::from_waker(&w1))
-            .is_pending());
-        assert!(fut
-            .as_mut()
-            .poll(&mut Context::from_waker(&w2))
-            .is_pending());
+        assert!(
+            fut.as_mut()
+                .poll(&mut Context::from_waker(&w1))
+                .is_pending()
+        );
+        assert!(
+            fut.as_mut()
+                .poll(&mut Context::from_waker(&w2))
+                .is_pending()
+        );
 
         tx.try_send(1).unwrap();
 
@@ -411,10 +418,11 @@ mod tests {
 
         // The channel is full, so this send parks and registers `ws`.
         let mut send = Box::pin(tx.send(2));
-        assert!(send
-            .as_mut()
-            .poll(&mut Context::from_waker(&ws))
-            .is_pending());
+        assert!(
+            send.as_mut()
+                .poll(&mut Context::from_waker(&ws))
+                .is_pending()
+        );
 
         // Popping a value frees capacity and must wake the parked sender.
         let mut recv = Box::pin(rx.recv());

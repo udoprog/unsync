@@ -100,18 +100,37 @@
 #![deny(missing_docs)]
 #![deny(rust_2018_idioms, unsafe_op_in_unsafe_fn)]
 #![allow(clippy::mut_from_ref)]
+#![no_std]
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
+#[cfg(feature = "std")]
+extern crate std;
+
+#[cfg(feature = "alloc")]
+extern crate alloc;
 
 // Utilities which are both used internally and in tests.
 #[doc(hidden)]
 pub mod utils;
 
+#[cfg(feature = "alloc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
 mod bi_rc;
+#[cfg(feature = "alloc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
 mod broad_rc;
+#[cfg(feature = "alloc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
 pub mod broadcast;
 pub mod once_cell;
+#[cfg(feature = "alloc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
 pub mod oneshot;
 pub mod semaphore;
+#[cfg(feature = "alloc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
 pub mod spsc;
+
 pub mod wait_list;
 
 #[doc(no_inline)]

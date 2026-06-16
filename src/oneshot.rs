@@ -3,11 +3,11 @@
 //! This allocates storage internally to maintain shared state between the
 //! [Sender] and [Receiver].
 
-use std::error::Error;
-use std::fmt::{self, Debug, Display, Formatter};
-use std::future::Future;
-use std::pin::Pin;
-use std::task::{Context, Poll, Waker};
+use core::error::Error;
+use core::fmt::{self, Debug, Display, Formatter};
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll, Waker};
 
 use crate::bi_rc::BiRc;
 
