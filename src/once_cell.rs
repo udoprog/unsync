@@ -21,7 +21,39 @@ pub struct OnceCell<T> {
     /// When it completes succesfully, this entire list will be woken. When it fails to
     /// complete, the first task on this list is woken and is expected to continue the
     /// initialization.
-    waiters: WaitList<(), ()>,
+    waiters: WaitList<(), Baton<T>>,
+}
+
+/// Wakeup value passed through `waiters`. While the cell is `Initializing`,
+/// whoever holds a `Baton` owns the job of initializing it. A waiter that
+/// resumes and sees one takes over (and forgets it); dropping one without taking
+/// over passes the job to the next waiter, or resets the cell to `Uninit` if
+/// there are none.
+struct Baton<T> {
+    cell: *const OnceCell<T>,
+}
+
+impl<T> Drop for Baton<T> {
+    fn drop(&mut self) {
+        // SAFETY: the cell outlives every waiter, and a baton only lives in a
+        // waiter slot or in code holding `&OnceCell`.
+        let cell = unsafe { &*self.cell };
+
+        // Nothing to do unless we still hold the job. We also must not borrow the
+        // wait list on the `Initialized` path: the success wake loop drops a
+        // leftover baton while holding that borrow.
+        if !matches!(unsafe { &*cell.state.get() }, State::Initializing) {
+            return;
+        }
+
+        // Pass the job to the next waiter. If there is none, `wake_one` hands the
+        // baton back; forget it so we don't recurse, and reset the cell.
+        let leftover = cell.waiters.borrow().wake_one(Baton { cell: self.cell });
+        if let Err(err) = leftover {
+            mem::forget(err.output);
+            unsafe { *cell.state.get() = State::Uninit };
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -231,33 +263,27 @@ impl<T> OnceCell<T> {
                 unsafe { *self.state.get() = State::Initializing };
             }
             State::Initializing => {
-                self.waiters.wait(()).await;
+                let baton = self.waiters.wait(()).await;
                 match unsafe { &*self.state.get() } {
                     // Initializing only resets to Uninit when there are no waiters - but we
                     // were just waiting, so there must've been waiters.
                     State::Uninit => unreachable!(),
-                    // The previous initializer failed to initialize the cell (it panicked or
-                    // errored). The job has now been passed down to us.
-                    State::Initializing => {}
+                    // The previous initializer failed and handed us the baton. The
+                    // `Guard` below now owns the job, so forget the baton.
+                    State::Initializing => mem::forget(baton),
                     State::Initialized { value } => return Ok(value),
                 }
             }
             State::Initialized { value } => return Ok(value),
         }
 
-        // This guard's Drop implementation is activated when `f` errors or panics and performs the
-        // necessary cleanup of notifying others that we have failed.
+        // Runs when `f` errors, panics, or the future is cancelled. Dropping the baton
+        // hands the job to the next waiter, or resets the cell if no-one is waiting.
         struct Guard<'once_cell, T>(&'once_cell OnceCell<T>);
 
         impl<T> Drop for Guard<'_, T> {
             fn drop(&mut self) {
-                // We failed to initialize, so attempt to pass the job of initialization onto
-                // the next waiter.
-                if self.0.waiters.borrow().wake_one(()).is_err() {
-                    // Having failed that, no-one is initializing the cell, so we must set its
-                    // state back to `Uninit`.
-                    unsafe { *self.0.state.get() = State::Uninit };
-                }
+                drop(Baton { cell: self.0 });
             }
         }
 
@@ -270,7 +296,7 @@ impl<T> OnceCell<T> {
         mem::forget(guard);
 
         let mut waiters = self.waiters.borrow();
-        while waiters.wake_one(()).is_ok() {}
+        while waiters.wake_one(Baton { cell: self }).is_ok() {}
 
         Ok(self.get().unwrap())
     }
@@ -422,5 +448,57 @@ mod tests {
 
         assert_eq!(initializer.as_mut().poll(cx), Poll::Ready(&5));
         assert_eq!(inserter.as_mut().poll(cx), Poll::Ready(Err((&5, 6))));
+    }
+
+    // `b` is handed the initializer role by a failing `a`, then dropped before
+    // taking over. With no other waiter the cell must reset to `Uninit` so a
+    // later initializer can run, instead of staying stuck in `Initializing`.
+    #[test]
+    fn woken_waiter_cancelled_resets_to_uninit() {
+        let cx = &mut noop_cx();
+        let cell = OnceCell::<i32>::new();
+
+        let mut a = Box::pin(cell.get_or_try_init(|| async {
+            tokio::task::yield_now().await;
+            Err::<i32, &str>("boom")
+        }));
+        assert_eq!(a.as_mut().poll(cx), Poll::Pending);
+
+        let mut b = Box::pin(cell.get_or_init(|| async { 1 }));
+        assert_eq!(b.as_mut().poll(cx), Poll::Pending);
+
+        // `a` fails and hands the role to `b`, which is then dropped.
+        assert_eq!(a.as_mut().poll(cx), Poll::Ready(Err("boom")));
+        drop(b);
+
+        let mut c = Box::pin(cell.get_or_init(|| async { 42 }));
+        assert_eq!(c.as_mut().poll(cx), Poll::Ready(&42));
+        assert_eq!(cell.get(), Some(&42));
+    }
+
+    // With a second waiter still queued, dropping the woken one must pass the
+    // role to the next rather than lose it.
+    #[test]
+    fn woken_waiter_cancelled_hands_role_to_next() {
+        let cx = &mut noop_cx();
+        let cell = OnceCell::<i32>::new();
+
+        let mut a = Box::pin(cell.get_or_try_init(|| async {
+            tokio::task::yield_now().await;
+            Err::<i32, &str>("boom")
+        }));
+        assert_eq!(a.as_mut().poll(cx), Poll::Pending);
+
+        let mut b = Box::pin(cell.get_or_init(|| async { 1 }));
+        let mut c = Box::pin(cell.get_or_init(|| async { 2 }));
+        assert_eq!(b.as_mut().poll(cx), Poll::Pending);
+        assert_eq!(c.as_mut().poll(cx), Poll::Pending);
+
+        // `a` fails and hands the role to `b`, dropped before it takes over.
+        assert_eq!(a.as_mut().poll(cx), Poll::Ready(Err("boom")));
+        drop(b);
+
+        assert_eq!(c.as_mut().poll(cx), Poll::Ready(&2));
+        assert_eq!(cell.get(), Some(&2));
     }
 }
