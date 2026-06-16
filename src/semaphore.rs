@@ -662,4 +662,24 @@ mod tests {
         assert!(w2.as_mut().poll(cx).is_ready());
         assert!(w3.as_mut().poll(cx).is_ready());
     }
+
+    // Cancelling a parked (never-woken) waiter must leave the queue consistent so
+    // a later release still reaches the next waiter.
+    #[test]
+    fn parked_acquire_cancelled_then_release() {
+        let cx = &mut noop_cx();
+        let sem = Semaphore::new(1);
+        let held = sem.try_acquire(1).unwrap();
+
+        let mut a = Box::pin(sem.acquire(1));
+        let mut b = Box::pin(sem.acquire(1));
+        assert!(a.as_mut().poll(cx).is_pending());
+        assert!(b.as_mut().poll(cx).is_pending());
+
+        // Cancel the parked front waiter, then release a permit.
+        drop(a);
+        drop(held);
+
+        assert!(b.as_mut().poll(cx).is_ready());
+    }
 }
