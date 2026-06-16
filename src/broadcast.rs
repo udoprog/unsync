@@ -229,7 +229,11 @@ where
         }
     }
 
-    /// Receive a message on the channel.
+    /// Send a message to every subscriber, returning the number it reached.
+    ///
+    /// This completes once the value has been buffered for each subscriber. If a
+    /// subscriber's buffer is full it waits until that subscriber receives a
+    /// value and frees a slot.
     ///
     /// Note that *not driving the returned future to completion* might result
     /// in some receivers not receiving the most up-to-date value.
@@ -301,40 +305,35 @@ where
                 inner.sender = Some(cx.waker().clone());
             }
 
-            loop {
-                let mut any_sent = false;
-                let mut delivered = 0;
+            let mut delivered = 0;
 
-                for (_, receiver) in &mut inner.receivers {
-                    if receiver.id == inner.id {
-                        delivered += 1;
-                        continue;
-                    }
-
-                    // Receiver buffer is at capacity.
-                    if receiver.at_capacity() {
-                        continue;
-                    }
-
-                    receiver.buf.push_back(this.value.clone());
-
-                    if let Some(waker) = &receiver.waker {
-                        waker.wake_by_ref();
-                    }
-
-                    any_sent = true;
-                }
-
-                if delivered == inner.receivers.len() {
-                    return Poll::Ready(delivered);
-                }
-
-                if any_sent {
+            for (_, receiver) in &mut inner.receivers {
+                // Already holds this message.
+                if receiver.id == inner.id {
+                    delivered += 1;
                     continue;
                 }
 
-                return Poll::Pending;
+                // No room yet; the receiver wakes us when it pops a value.
+                if receiver.at_capacity() {
+                    continue;
+                }
+
+                receiver.buf.push_back(this.value.clone());
+                receiver.id = inner.id;
+
+                if let Some(waker) = &receiver.waker {
+                    waker.wake_by_ref();
+                }
+
+                delivered += 1;
             }
+
+            if delivered == inner.receivers.len() {
+                return Poll::Ready(delivered);
+            }
+
+            Poll::Pending
         }
     }
 }
@@ -403,9 +402,7 @@ impl<T> Future for Recv<'_, T> {
             };
 
             if let Some(value) = receiver.buf.pop_front() {
-                receiver.id = inner.id;
-
-                // Senders have interest once a buffer has been taken.
+                // Popping freed a slot, so wake a sender waiting for room.
                 if let Some(waker) = &inner.sender {
                     waker.wake_by_ref();
                 }
@@ -427,19 +424,6 @@ impl<T> Future for Recv<'_, T> {
             }
 
             Poll::Pending
-        }
-    }
-}
-
-impl<T> Drop for Recv<'_, T> {
-    fn drop(&mut self) {
-        unsafe {
-            let index = self.receiver.index;
-            let (inner, _) = self.receiver.inner.get_mut_unchecked();
-
-            if let Some(receiver) = inner.receivers.get_mut(index) {
-                receiver.buf.clear();
-            }
         }
     }
 }
@@ -520,9 +504,10 @@ mod tests {
     use std::future::Future;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
-    use std::task::{Context, Wake, Waker};
+    use std::task::{Context, Poll, Wake, Waker};
 
     use super::channel;
+    use crate::utils::noop_cx;
 
     struct Flag(AtomicBool);
 
@@ -554,5 +539,83 @@ mod tests {
         assert_eq!(tx.try_send(1), Ok(1));
 
         assert!(second.0.load(Ordering::SeqCst), "latest waker was not woken");
+    }
+
+    // A buffer of capacity > 1 must hold several distinct messages and hand them
+    // back in order, without losing any.
+    #[test]
+    fn buffers_multiple_messages_in_order() {
+        let cx = &mut noop_cx();
+        let mut tx = channel::<u32>(2);
+        let mut sub = tx.subscribe();
+
+        assert_eq!(tx.try_send(1), Ok(1));
+        assert_eq!(tx.try_send(2), Ok(1));
+
+        let v1 = {
+            let mut r = Box::pin(sub.recv());
+            r.as_mut().poll(cx)
+        };
+        let v2 = {
+            let mut r = Box::pin(sub.recv());
+            r.as_mut().poll(cx)
+        };
+        assert_eq!(v1, Poll::Ready(Some(1)));
+        assert_eq!(v2, Poll::Ready(Some(2)));
+    }
+
+    // A single `send` buffers exactly one copy and resolves once buffered, with
+    // no second copy left behind.
+    #[test]
+    fn send_buffers_once_and_resolves() {
+        let cx = &mut noop_cx();
+        let mut tx = channel::<u32>(2);
+        let mut sub = tx.subscribe();
+
+        let mut s = Box::pin(tx.send(1));
+        assert_eq!(s.as_mut().poll(cx), Poll::Ready(1));
+        drop(s);
+
+        let v1 = {
+            let mut r = Box::pin(sub.recv());
+            r.as_mut().poll(cx)
+        };
+        let v2 = {
+            let mut r = Box::pin(sub.recv());
+            r.as_mut().poll(cx)
+        };
+        assert_eq!(v1, Poll::Ready(Some(1)));
+        assert_eq!(v2, Poll::Pending);
+    }
+
+    // A full subscriber buffer makes `send` wait until the subscriber pops a
+    // value, then resume.
+    #[test]
+    fn send_waits_for_capacity() {
+        let cx = &mut noop_cx();
+        let mut tx = channel::<u32>(1);
+        let mut sub = tx.subscribe();
+
+        let mut s1 = Box::pin(tx.send(1));
+        assert_eq!(s1.as_mut().poll(cx), Poll::Ready(1));
+        drop(s1);
+
+        // The only slot is taken, so this send parks.
+        let mut s2 = Box::pin(tx.send(2));
+        assert!(s2.as_mut().poll(cx).is_pending());
+
+        // Receiving frees the slot, so the send can finish.
+        let v1 = {
+            let mut r = Box::pin(sub.recv());
+            r.as_mut().poll(cx)
+        };
+        assert_eq!(v1, Poll::Ready(Some(1)));
+        assert_eq!(s2.as_mut().poll(cx), Poll::Ready(1));
+
+        let v2 = {
+            let mut r = Box::pin(sub.recv());
+            r.as_mut().poll(cx)
+        };
+        assert_eq!(v2, Poll::Ready(Some(2)));
     }
 }
