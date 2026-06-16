@@ -533,12 +533,21 @@ mod tests {
         let w2 = Waker::from(second.clone());
 
         let mut fut = Box::pin(sub.recv());
-        assert!(fut.as_mut().poll(&mut Context::from_waker(&w1)).is_pending());
-        assert!(fut.as_mut().poll(&mut Context::from_waker(&w2)).is_pending());
+        assert!(fut
+            .as_mut()
+            .poll(&mut Context::from_waker(&w1))
+            .is_pending());
+        assert!(fut
+            .as_mut()
+            .poll(&mut Context::from_waker(&w2))
+            .is_pending());
 
         assert_eq!(tx.try_send(1), Ok(1));
 
-        assert!(second.0.load(Ordering::SeqCst), "latest waker was not woken");
+        assert!(
+            second.0.load(Ordering::SeqCst),
+            "latest waker was not woken"
+        );
     }
 
     // A buffer of capacity > 1 must hold several distinct messages and hand them
