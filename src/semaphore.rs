@@ -1,6 +1,7 @@
 //! [`Semaphore`] provides an unsychronized asynchronous semaphore for permit acquisition.
 
 use std::cell::Cell;
+use std::mem;
 use std::mem::ManuallyDrop;
 
 use crate::wait_list::WaitList;
@@ -56,14 +57,40 @@ pub struct Semaphore {
     total_permits: Cell<usize>,
 }
 
-/// Ways in which a waiter can be woken.
+/// How permits are released to waiters.
 #[derive(Debug, Clone, Copy)]
-enum WakeUp {
-    /// The waiter was fairly given the number of permits it requested by `add_permits_fair`.
+enum Fairness {
+    /// Deducted up front and handed straight to the woken waiter, so no-one else
+    /// can take them.
     Fair,
-    /// The waiter was notified by `add_permits` that the requested number of permits may be
-    /// available, but wasn't given them directly.
+    /// Just made available; woken waiters re-contend for them via `try_acquire`.
     Unfair,
+}
+
+/// The value handed to a woken waiter through the wait list.
+enum WakeUp {
+    /// Permits may be available; the waiter must re-contend via `try_acquire`.
+    Unfair,
+    /// The requested permits were granted directly. The grant holds them until
+    /// the waiter turns it into a `Permit`.
+    Fair(FairGrant),
+}
+
+/// Permits reserved for a specific waiter by a fair release. If the waiter
+/// resumes it forgets the grant and turns it into a `Permit`; if it is cancelled
+/// first, this `Drop` hands the permits back to the semaphore instead of leaking
+/// them.
+struct FairGrant {
+    semaphore: *const Semaphore,
+    permits: usize,
+}
+
+impl Drop for FairGrant {
+    fn drop(&mut self) {
+        // SAFETY: the semaphore outlives every waiter holding a grant.
+        let semaphore = unsafe { &*self.semaphore };
+        semaphore.release_permits(self.permits, Fairness::Unfair);
+    }
 }
 
 impl Semaphore {
@@ -147,7 +174,7 @@ impl Semaphore {
                 .expect("number of permits overflowed"),
         );
 
-        self.release_permits(new_permits, WakeUp::Unfair);
+        self.release_permits(new_permits, Fairness::Unfair);
     }
 
     /// Add new permits to the semaphore, using a fair wakeup algorithm to
@@ -173,7 +200,7 @@ impl Semaphore {
     pub fn add_permits_fair(&self, new_permits: usize) {
         self.total_permits
             .set(self.total_permits.get().checked_add(new_permits).unwrap());
-        self.release_permits(new_permits, WakeUp::Fair);
+        self.release_permits(new_permits, Fairness::Fair);
     }
 
     /// Attempt to acquire permits from the semaphore immediately.
@@ -262,7 +289,10 @@ impl Semaphore {
 
             match self.waiters.wait(to_acquire).await {
                 WakeUp::Unfair => continue,
-                WakeUp::Fair => {
+                WakeUp::Fair(grant) => {
+                    // The `Permit` below owns these permits now; forget the grant
+                    // so they aren't released twice.
+                    mem::forget(grant);
                     return Permit {
                         semaphore: self,
                         permits: to_acquire,
@@ -309,7 +339,10 @@ impl Semaphore {
 
             match self.waiters.wait(to_acquire).await {
                 WakeUp::Unfair => continue,
-                WakeUp::Fair => {
+                WakeUp::Fair(grant) => {
+                    // The `Permit` below owns these permits now; forget the grant
+                    // so they aren't released twice.
+                    mem::forget(grant);
                     return Permit {
                         semaphore: self,
                         permits: to_acquire,
@@ -319,7 +352,7 @@ impl Semaphore {
         }
     }
 
-    fn release_permits(&self, permits: usize, fairness: WakeUp) {
+    fn release_permits(&self, permits: usize, fairness: Fairness) {
         let mut permits = self.permits.get() + permits;
         self.permits.set(permits);
 
@@ -331,11 +364,20 @@ impl Semaphore {
                 None => break,
             };
 
-            if let WakeUp::Fair = fairness {
-                self.permits.set(permits);
-            }
+            let wake = match fairness {
+                Fairness::Fair => {
+                    // Commit the deduction; the grant returns the permits if the
+                    // waiter is cancelled before it claims them.
+                    self.permits.set(permits);
+                    WakeUp::Fair(FairGrant {
+                        semaphore: self,
+                        permits: wanted_permits,
+                    })
+                }
+                Fairness::Unfair => WakeUp::Unfair,
+            };
 
-            if waiters.wake_one(fairness).is_err() {
+            if waiters.wake_one(wake).is_err() {
                 // Hint that the `None` branch can be optimized away. We know
                 // this is unreachable since we've cheat that an head input
                 // exists above.
@@ -460,13 +502,64 @@ impl<'semaphore> Permit<'semaphore> {
     /// ```
     pub fn release_fair(self) {
         let this = ManuallyDrop::new(self);
-        this.semaphore.release_permits(this.permits, WakeUp::Fair);
+        this.semaphore.release_permits(this.permits, Fairness::Fair);
     }
 }
 
 impl Drop for Permit<'_> {
     fn drop(&mut self) {
         self.semaphore()
-            .release_permits(self.permits(), WakeUp::Unfair);
+            .release_permits(self.permits(), Fairness::Unfair);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+
+    use super::Semaphore;
+    use crate::utils::noop_cx;
+
+    // A fair release reserves the permit for `f1`. If `f1` is dropped before
+    // claiming it, the permit must go back to the semaphore rather than leak.
+    #[test]
+    fn fair_grant_to_cancelled_waiter_is_not_leaked() {
+        let cx = &mut noop_cx();
+        let sem = Semaphore::new(1);
+
+        let initial = sem.try_acquire(1).unwrap();
+        assert_eq!(sem.available_permits(), 0);
+
+        let mut f1 = Box::pin(sem.acquire(1));
+        assert!(f1.as_mut().poll(cx).is_pending());
+
+        initial.release_fair();
+        assert_eq!(sem.available_permits(), 0);
+
+        drop(f1);
+
+        assert_eq!(sem.available_permits(), 1);
+        assert!(sem.try_acquire(1).is_some());
+    }
+
+    // The permits returned by a cancelled fair waiter must be able to wake the
+    // next waiter queued behind it (FairGrant::drop re-enters release_permits).
+    #[test]
+    fn permits_from_cancelled_fair_waiter_wake_next_waiter() {
+        let cx = &mut noop_cx();
+        let sem = Semaphore::new(1);
+
+        let initial = sem.try_acquire(1).unwrap();
+        let mut f1 = Box::pin(sem.acquire(1));
+        let mut f2 = Box::pin(sem.acquire(1));
+        assert!(f1.as_mut().poll(cx).is_pending());
+        assert!(f2.as_mut().poll(cx).is_pending());
+
+        initial.release_fair();
+        assert_eq!(sem.available_permits(), 0);
+
+        // `f1`'s reserved permit must flow to `f2`.
+        drop(f1);
+        assert!(f2.as_mut().poll(cx).is_ready());
     }
 }
