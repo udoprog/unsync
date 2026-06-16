@@ -38,7 +38,7 @@ struct Shared<T> {
     tx: Option<Waker>,
     /// Waker to wake once receiving is available.
     rx: Option<Waker>,
-    /// Test if the interior value is set.
+    /// The buffer of messages for this channel.
     buf: VecDeque<T>,
     /// Indicates if the channel is unbounded.
     unbounded: bool,
