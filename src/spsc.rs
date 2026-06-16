@@ -382,12 +382,21 @@ mod tests {
         let w2 = Waker::from(second.clone());
 
         let mut fut = Box::pin(rx.recv());
-        assert!(fut.as_mut().poll(&mut Context::from_waker(&w1)).is_pending());
-        assert!(fut.as_mut().poll(&mut Context::from_waker(&w2)).is_pending());
+        assert!(fut
+            .as_mut()
+            .poll(&mut Context::from_waker(&w1))
+            .is_pending());
+        assert!(fut
+            .as_mut()
+            .poll(&mut Context::from_waker(&w2))
+            .is_pending());
 
         tx.try_send(1).unwrap();
 
-        assert!(second.0.load(Ordering::SeqCst), "latest waker was not woken");
+        assert!(
+            second.0.load(Ordering::SeqCst),
+            "latest waker was not woken"
+        );
     }
 
     // A sender blocked on a full channel must be woken when the receiver pops a
@@ -402,12 +411,18 @@ mod tests {
 
         // The channel is full, so this send parks and registers `ws`.
         let mut send = Box::pin(tx.send(2));
-        assert!(send.as_mut().poll(&mut Context::from_waker(&ws)).is_pending());
+        assert!(send
+            .as_mut()
+            .poll(&mut Context::from_waker(&ws))
+            .is_pending());
 
         // Popping a value frees capacity and must wake the parked sender.
         let mut recv = Box::pin(rx.recv());
         assert_eq!(recv.as_mut().poll(&mut noop_cx()), Poll::Ready(Some(1)));
 
-        assert!(sender.0.load(Ordering::SeqCst), "blocked sender was not woken");
+        assert!(
+            sender.0.load(Ordering::SeqCst),
+            "blocked sender was not woken"
+        );
     }
 }
