@@ -501,4 +501,58 @@ mod tests {
         assert_eq!(c.as_mut().poll(cx), Poll::Ready(&2));
         assert_eq!(cell.get(), Some(&2));
     }
+
+    // A panicking initializer must hand the role to a waiter, which then
+    // succeeds; the panic unwinds through the guard's hand-off.
+    #[test]
+    fn initializer_panic_hands_role_to_waiter() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let cx = &mut noop_cx();
+        let cell = OnceCell::<i32>::new();
+
+        let mut a = Box::pin(cell.get_or_init(|| async {
+            tokio::task::yield_now().await;
+            panic!("boom")
+        }));
+        assert_eq!(a.as_mut().poll(cx), Poll::Pending);
+
+        let mut b = Box::pin(cell.get_or_init(|| async { 2 }));
+        assert_eq!(b.as_mut().poll(cx), Poll::Pending);
+
+        let panicked = catch_unwind(AssertUnwindSafe(|| a.as_mut().poll(cx)));
+        assert!(panicked.is_err());
+        drop(a);
+
+        assert_eq!(b.as_mut().poll(cx), Poll::Ready(&2));
+        assert_eq!(cell.get(), Some(&2));
+    }
+
+    // The initializer role chains through several failing initializers to a
+    // final one that succeeds.
+    #[test]
+    fn role_chains_through_failures() {
+        let cx = &mut noop_cx();
+        let cell = OnceCell::<i32>::new();
+
+        let mut a = Box::pin(cell.get_or_try_init(|| async {
+            tokio::task::yield_now().await;
+            Err::<i32, &str>("a")
+        }));
+        let mut b = Box::pin(cell.get_or_try_init(|| async {
+            tokio::task::yield_now().await;
+            Err::<i32, &str>("b")
+        }));
+        let mut c = Box::pin(cell.get_or_try_init(|| async { Ok::<i32, &str>(3) }));
+        assert_eq!(a.as_mut().poll(cx), Poll::Pending);
+        assert_eq!(b.as_mut().poll(cx), Poll::Pending);
+        assert_eq!(c.as_mut().poll(cx), Poll::Pending);
+
+        // Each failure hands the role to the next waiter in turn.
+        assert_eq!(a.as_mut().poll(cx), Poll::Ready(Err("a")));
+        assert_eq!(b.as_mut().poll(cx), Poll::Pending);
+        assert_eq!(b.as_mut().poll(cx), Poll::Ready(Err("b")));
+        assert_eq!(c.as_mut().poll(cx), Poll::Ready(Ok(&3)));
+        assert_eq!(cell.get(), Some(&3));
+    }
 }
