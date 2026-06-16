@@ -52,7 +52,7 @@ someone to tap into these benefits.
 Add the following to your `Cargo.toml`:
 
 ```toml
-unsync = "0.1.2"
+unsync = "0.2.0"
 ```
 
 <br>
