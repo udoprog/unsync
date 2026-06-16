@@ -1,8 +1,8 @@
 //! [`Semaphore`] provides an unsychronized asynchronous semaphore for permit acquisition.
 
-use std::cell::Cell;
-use std::mem;
-use std::mem::ManuallyDrop;
+use core::cell::Cell;
+use core::mem;
+use core::mem::ManuallyDrop;
 
 use crate::wait_list::WaitList;
 
@@ -37,7 +37,7 @@ use crate::wait_list::WaitList;
 ///   `usize::MAX`.
 /// - Consistently uses `usize` to count permit numbers instead of using `u32`
 ///   sometimes.
-/// - Gives more control over the fairness algorithms used.
+/// - Gives more control over fairness.
 ///
 /// [`acquire`]: Self::acquire
 /// [`acquire_unfair`]: Self::acquire_unfair
@@ -549,7 +549,9 @@ impl Drop for Permit<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::future::Future;
+    use core::future::Future;
+
+    use alloc::boxed::Box;
 
     use super::Semaphore;
     use crate::utils::noop_cx;

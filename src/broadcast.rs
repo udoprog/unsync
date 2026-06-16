@@ -3,22 +3,23 @@
 //! This allocates storage internally to maintain shared state between the
 //! [Sender] and [Receiver]s.
 
-use std::collections::VecDeque;
-use std::error::Error;
-use std::fmt;
-use std::fmt::Display;
-use std::fmt::Formatter;
-use std::future::Future;
-use std::num::NonZeroUsize;
-use std::pin::Pin;
-use std::task::{Context, Poll, Waker};
+use core::error::Error;
+use core::fmt;
+use core::fmt::Display;
+use core::fmt::Formatter;
+use core::future::Future;
+use core::num::NonZeroUsize;
+use core::pin::Pin;
+use core::task::{Context, Poll, Waker};
+
+use alloc::collections::VecDeque;
 
 use crate::broad_rc::{BroadRc, BroadWeak};
 
 const DEFAULT_CAPACITY: usize = 16;
 
-/// Error raised when trying to [Sender::try_send] but the subscribers either do
-/// not have the necessary capacity or there are no subscribers.
+/// Error raised when trying to [`Sender::try_send`] but the subscribers either
+/// do not have the necessary capacity or there are no subscribers.
 ///
 /// The error includes the number of receivers that the value was delivered to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -113,11 +114,11 @@ where
 
     /// Subscribe to the broadcast channel.
     ///
-    /// This will set up a new buffer for the returned [Receiver] which will
+    /// This will set up a new buffer for the returned [`Receiver`] which will
     /// allocate space for the number of elements specified when the channel was
-    /// created with [channel].
+    /// created with [`channel`].
     ///
-    /// The returned [Receiver] is guaranteed to receive all updates to the
+    /// The returned [`Receiver`] is guaranteed to receive all updates to the
     /// current broadcast channel, even to the extend that sending to other
     /// receivers will be blocked. Note that this means that *slow receivers*
     /// are capable of hogging down the entire broadcast system since they must
@@ -172,7 +173,7 @@ where
 
     /// Try to send a value to all subscribers in a non-blocking manner.
     ///
-    /// This errors with [UnderCapacity] unless all subscribers have the
+    /// This errors with [`UnderCapacity`] unless all subscribers have the
     /// capacity to receive the value.
     ///
     /// On an error, the subscribers that did have the capacity to receive the
@@ -350,7 +351,7 @@ impl<T> Receiver<T> {
     /// Receive a message on the channel.
     ///
     /// Trying to receive a message on a queue that has been closed by dropping
-    /// its [Sender] will result in `None` being returned.
+    /// its [`Sender`] will result in `None` being returned.
     ///
     /// # Examples
     ///
@@ -382,7 +383,7 @@ impl<T> Receiver<T> {
     }
 }
 
-/// Future associated with receiving through [Receiver::recv].
+/// Future associated with receiving through [`Receiver::recv`].
 struct Recv<'a, T> {
     receiver: &'a mut Receiver<T>,
 }
@@ -428,6 +429,7 @@ impl<T> Future for Recv<'_, T> {
     }
 }
 
+/// Future associated with sending through [`Sender::send`].
 impl<T> Drop for Sender<T>
 where
     T: Clone,
@@ -461,6 +463,11 @@ impl<T> Drop for Receiver<T> {
 
 /// Setup a broadcast channel with the given per-subscriber capacity.
 ///
+/// This means that the channel will buffer up to `capacity` messages for each
+/// subscriber, and once this capacity is reached will asynchronously block the
+/// sender until either the subscriber is dropped or receives a message freeing
+/// up capacity.
+///
 /// # Panics
 ///
 /// Panics if `capacity` is specified as 0.
@@ -482,9 +489,23 @@ where
 
 /// Setup a broadcast channel which is unbounded.
 ///
-/// # Panics
+/// # Examples
 ///
-/// Panics if `capacity` is specified as 0.
+/// ```
+/// use unsync::broadcast;
+/// # #[tokio::main(flavor = "current_thread")] async fn main() {
+/// let mut sender = broadcast::unbounded();
+///
+/// let mut sub1 = sender.subscribe();
+/// let mut sub2 = sender.subscribe();
+///
+/// let (result, s1, s2) = tokio::join!(sender.send(42), sub1.recv(), sub2.recv());
+///
+/// assert_eq!(result, 2);
+/// assert_eq!(s1, Some(42));
+/// assert_eq!(s2, Some(42));
+/// # }
+/// ```
 pub fn unbounded<T>() -> Sender<T>
 where
     T: Clone,
@@ -501,10 +522,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::future::Future;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
-    use std::task::{Context, Poll, Wake, Waker};
+    use core::future::Future;
+    use core::sync::atomic::{AtomicBool, Ordering};
+    use core::task::{Context, Poll, Waker};
+
+    use alloc::boxed::Box;
+    use alloc::sync::Arc;
+    use alloc::task::Wake;
 
     use super::channel;
     use crate::utils::noop_cx;
@@ -515,6 +539,7 @@ mod tests {
         fn wake(self: Arc<Self>) {
             self.0.store(true, Ordering::SeqCst);
         }
+
         fn wake_by_ref(self: &Arc<Self>) {
             self.0.store(true, Ordering::SeqCst);
         }
@@ -533,14 +558,16 @@ mod tests {
         let w2 = Waker::from(second.clone());
 
         let mut fut = Box::pin(sub.recv());
-        assert!(fut
-            .as_mut()
-            .poll(&mut Context::from_waker(&w1))
-            .is_pending());
-        assert!(fut
-            .as_mut()
-            .poll(&mut Context::from_waker(&w2))
-            .is_pending());
+        assert!(
+            fut.as_mut()
+                .poll(&mut Context::from_waker(&w1))
+                .is_pending()
+        );
+        assert!(
+            fut.as_mut()
+                .poll(&mut Context::from_waker(&w2))
+                .is_pending()
+        );
 
         assert_eq!(tx.try_send(1), Ok(1));
 

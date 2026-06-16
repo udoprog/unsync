@@ -1,34 +1,33 @@
 //! [`OnceCell`] holds a value that can be written to only once.
 
-use std::cell::UnsafeCell;
-use std::convert::Infallible;
-use std::fmt;
-use std::fmt::Debug;
-use std::future::Future;
-use std::mem;
+use core::cell::UnsafeCell;
+use core::convert::Infallible;
+use core::fmt;
+use core::future::Future;
+use core::mem;
 
 use crate::wait_list::WaitList;
 
 /// A value that can be written to only once.
 ///
-/// A `OnceCell` is typically used for global variables that need to be initialized once on first
-/// use, but need no further changes. This `OnceCell` allows the initialization procedure to be
-/// asynchronous.
+/// A `OnceCell` is typically used for global variables that need to be
+/// initialized once on first use, but need no further changes. This `OnceCell`
+/// allows the initialization procedure to be asynchronous.
 pub struct OnceCell<T> {
     state: UnsafeCell<State<T>>,
     /// The list of tasks waiting for the initialization to complete.
     ///
-    /// When it completes succesfully, this entire list will be woken. When it fails to
-    /// complete, the first task on this list is woken and is expected to continue the
-    /// initialization.
+    /// When it completes succesfully, this entire list will be woken. When it
+    /// fails to complete, the first task on this list is woken and is expected
+    /// to continue the initialization.
     waiters: WaitList<(), Baton<T>>,
 }
 
 /// Wakeup value passed through `waiters`. While the cell is `Initializing`,
 /// whoever holds a `Baton` owns the job of initializing it. A waiter that
-/// resumes and sees one takes over (and forgets it); dropping one without taking
-/// over passes the job to the next waiter, or resets the cell to `Uninit` if
-/// there are none.
+/// resumes and sees one takes over (and forgets it); dropping one without
+/// taking over passes the job to the next waiter, or resets the cell to
+/// `Uninit` if there are none.
 struct Baton<T> {
     cell: *const OnceCell<T>,
 }
@@ -76,8 +75,8 @@ impl<T> OnceCell<T> {
         }
     }
 
-    /// Get a shared reference to the inner value, returning `None` if it has not been set yet or is
-    /// in the process of being set.
+    /// Get a shared reference to the inner value, returning `None` if it has
+    /// not been set yet or is in the process of being set.
     #[must_use]
     pub fn get(&self) -> Option<&T> {
         match unsafe { &*self.state.get() } {
@@ -86,8 +85,8 @@ impl<T> OnceCell<T> {
         }
     }
 
-    /// Get a unique reference to the inner value, returning `None` if it has not been set yet or
-    /// is in the process of being set.
+    /// Get a unique reference to the inner value, returning `None` if it has
+    /// not been set yet or is in the process of being set.
     #[must_use]
     pub fn get_mut(&mut self) -> Option<&mut T> {
         match self.state.get_mut() {
@@ -98,8 +97,9 @@ impl<T> OnceCell<T> {
 
     /// Set the contents of the cell to `value` if it is unset.
     ///
-    /// In contrast to [`Self::insert`], if the cell is currently being initialized this function
-    /// will not wait and will instead return [`SetResult::Initializing`] immediately.
+    /// In contrast to [`Self::insert`], if the cell is currently being
+    /// initialized this function will not wait and will instead return
+    /// [`SetResult::Initializing`] immediately.
     ///
     /// # Examples
     ///
@@ -153,12 +153,15 @@ impl<T> OnceCell<T> {
         }
     }
 
-    /// Set the contents of the cell to `value` if it is unset, or wait for it to be set.
+    /// Set the contents of the cell to `value` if it is unset, or wait for it
+    /// to be set.
     ///
-    /// Returns a `Result` indicating if inserting the given value was successful.
+    /// Returns a `Result` indicating if inserting the given value was
+    /// successful.
     ///
-    /// If the cell is currently being initialized, this function will wait for that to complete —
-    /// if you do not wish to wait in that case, use [`Self::set`] instead.
+    /// If the cell is currently being initialized, this function will wait for
+    /// that to complete — if you do not wish to wait in that case, use
+    /// [`Self::set`] instead.
     ///
     /// # Examples
     ///
@@ -213,8 +216,8 @@ impl<T> OnceCell<T> {
 
     /// Get the contents of the cell, initializing it with `f` if it was empty.
     ///
-    /// If either `f` or the future it returns panic, this is propagated and the cell will stay
-    /// uninitialized.
+    /// If either `f` or the future it returns panic, this is propagated and the
+    /// cell will stay uninitialized.
     ///
     /// This function will deadlock if called recursively.
     ///
@@ -247,10 +250,11 @@ impl<T> OnceCell<T> {
         }
     }
 
-    /// Get the contents of the cell, attempting to initialize it with `f` it it was empty.
+    /// Get the contents of the cell, attempting to initialize it with `f` it it
+    /// was empty.
     ///
-    /// If either `f` or the future it returns panic, this is propagated and the cell will stay
-    /// uninitialized.
+    /// If either `f` or the future it returns panic, this is propagated and the
+    /// cell will stay uninitialized.
     ///
     /// This function will deadlock if called recursively.
     pub async fn get_or_try_init<E, Fut, F>(&self, f: F) -> Result<&T, E>
@@ -301,7 +305,8 @@ impl<T> OnceCell<T> {
         Ok(self.get().unwrap())
     }
 
-    /// Take the value out of the `OnceCell`, leaving it in an uninitialized state.
+    /// Take the value out of the `OnceCell`, leaving it in an uninitialized
+    /// state.
     ///
     /// # Examples
     ///
@@ -337,7 +342,10 @@ impl<T> OnceCell<T> {
     }
 }
 
-impl<T: Debug> Debug for OnceCell<T> {
+impl<T> fmt::Debug for OnceCell<T>
+where
+    T: fmt::Debug,
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("OnceCell")
             .field("state", unsafe { &*self.state.get() })
@@ -418,11 +426,14 @@ impl<'once_cell, T> SetResult<'once_cell, T> {
 
 #[cfg(test)]
 mod tests {
-    use std::future::Future;
-    use std::task::Poll;
+    use core::future::Future;
+    use core::task::Poll;
+
+    use alloc::boxed::Box;
+
+    use crate::utils::noop_cx;
 
     use super::OnceCell;
-    use crate::utils::noop_cx;
 
     #[test]
     fn insert_when_initializing() {
@@ -506,7 +517,7 @@ mod tests {
     // succeeds; the panic unwinds through the guard's hand-off.
     #[test]
     fn initializer_panic_hands_role_to_waiter() {
-        use std::panic::{catch_unwind, AssertUnwindSafe};
+        use std::panic::{AssertUnwindSafe, catch_unwind};
 
         let cx = &mut noop_cx();
         let cell = OnceCell::<i32>::new();

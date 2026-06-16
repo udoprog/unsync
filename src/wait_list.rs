@@ -1,18 +1,18 @@
 //! [`WaitList`] is an intrusively linked list of futures waiting on an event.
 
-use std::cell::Cell;
-use std::cell::UnsafeCell;
-use std::error::Error;
-use std::fmt;
-use std::fmt::Debug;
-use std::fmt::Display;
-use std::future::Future;
-use std::mem::ManuallyDrop;
-use std::pin::Pin;
-use std::process;
-use std::ptr::NonNull;
-use std::task;
-use std::task::Poll;
+use core::cell::Cell;
+use core::cell::UnsafeCell;
+use core::error::Error;
+use core::fmt;
+use core::fmt::Debug;
+use core::fmt::Display;
+use core::future::Future;
+use core::mem::ManuallyDrop;
+use core::pin::Pin;
+use core::ptr::NonNull;
+use core::task::{self, Poll};
+
+use crate::utils::abort;
 
 /// An intrusively linked list of futures waiting on an event.
 ///
@@ -83,7 +83,8 @@ use std::task::Poll;
 pub struct WaitList<I, O> {
     /// Whether the wait list is currently borrowed.
     ///
-    /// This flag asserts unique access to both `inner` and every `Waiter` in the list.
+    /// This flag asserts unique access to both `inner` and every `Waiter` in
+    /// the list.
     borrowed: Cell<bool>,
 
     /// Inner state of the wait list, protected by the above boolean.
@@ -98,7 +99,8 @@ struct Inner<I, O> {
 
     /// The tail of the queue; the newest waiter.
     ///
-    /// Whether this is `None` must remain in sync with whether `head` is `None`.
+    /// Whether this is `None` must remain in sync with whether `head` is
+    /// `None`.
     tail: Option<NonNull<UnsafeCell<Waiter<I, O>>>>,
 }
 
@@ -110,7 +112,8 @@ impl<I, O> Inner<I, O> {
     /// - `waiter` must be the only reference to that object.
     /// - `waiter` must be a valid pointer until it is removed.
     unsafe fn enqueue(&mut self, waiter: &UnsafeCell<Waiter<I, O>>) {
-        // Set the previous waiter to the current tail of the queue, if there was one.
+        // Set the previous waiter to the current tail of the queue, if there
+        // was one.
         unsafe {
             (*waiter.get()).prev = self.tail;
         }
@@ -268,8 +271,8 @@ impl<I, O> WaitList<I, O> {
 
     /// Wait on the wait list.
     ///
-    /// The returned future resolves once [`Borrowed::wake_one`] is called and it is at the front
-    /// of the queue.
+    /// The returned future resolves once [`Borrowed::wake_one`] is called and
+    /// it is at the front of the queue.
     ///
     /// # Panics
     ///
@@ -319,8 +322,8 @@ pub struct Borrowed<'wait_list, I, O> {
 
 impl<I, O> Borrowed<'_, I, O> {
     fn inner(&self) -> &Inner<I, O> {
-        // SAFETY: In order to create this type, the `WaitList` must be borrowed uniquely, so we
-        // effectively have an `&mut Inner<T>`.
+        // SAFETY: In order to create this type, the `WaitList` must be borrowed
+        // uniquely, so we effectively have an `&mut Inner<T>`.
         unsafe { &*self.list.inner.get() }
     }
     fn inner_mut(&mut self) -> &mut Inner<I, O> {
@@ -339,19 +342,21 @@ impl<I, O> Borrowed<'_, I, O> {
         self.inner().head.is_none()
     }
 
-    /// Retrieve a shared reference to the input given by the head entry in the list, if there is
-    /// one.
+    /// Retrieve a shared reference to the input given by the head entry in the
+    /// list, if there is one.
     #[must_use]
     pub fn head_input(&self) -> Option<&I> {
-        // SAFETY: We have set `borrowed`, so we can access any entry in the list.
+        // SAFETY: We have set `borrowed`, so we can access any entry in the
+        // list.
         Some(unsafe { &(*self.head()?.get()).state.input })
     }
 
-    /// Retrieve a unique reference to the input given by the head entry in the list, if there is
-    /// one.
+    /// Retrieve a unique reference to the input given by the head entry in the
+    /// list, if there is one.
     #[must_use]
     pub fn head_input_mut(&mut self) -> Option<&mut I> {
-        // SAFETY: We have set `borrowed`, so we can access any entry in the list.
+        // SAFETY: We have set `borrowed`, so we can access any entry in the
+        // list.
         Some(unsafe { &mut (*self.head()?.get()).state.input })
     }
 
@@ -431,10 +436,9 @@ impl<I, O> Borrowed<'_, I, O> {
             // Take the `Waker`, both for later waking and to mark it as woken
             let waker = match head.waker.take() {
                 Some(waker) => waker,
-                // Since the task is currently linked up to the wait list,
-                // this should not be a possible state. Add a hint
-                // indicating that it's impossible to improve code
-                // generation.
+                // Since the task is currently linked up to the wait list, this
+                // should not be a possible state. Add a hint indicating that
+                // it's impossible to improve code generation.
                 None => unreachable!(),
             };
 
@@ -444,12 +448,14 @@ impl<I, O> Borrowed<'_, I, O> {
             (waker, input)
         };
 
-        // Dequeue the first waiter now that it's not necessary to keep it in the queue.
+        // Dequeue the first waiter now that it's not necessary to keep it in
+        // the queue.
         unsafe {
             inner.dequeue(head.as_ref());
         }
 
-        // Wake the waker last, to ensure that if this panics nothing goes wrong.
+        // Wake the waker last, to ensure that if this panics nothing goes
+        // wrong.
         waker.wake();
         Ok(input)
     }
@@ -507,11 +513,10 @@ impl<I, O> Future for WaitInner<'_, '_, I, O> {
 
 impl<I, O> Drop for WaitInner<'_, '_, I, O> {
     fn drop(&mut self) {
-        let mut list = match self.list.try_borrow() {
-            Some(guard) => guard,
-            // Panicking isn't enough because that would allow the `waiter` to be used after it's
-            // freed.
-            None => process::abort(),
+        let Some(mut list) = self.list.try_borrow() else {
+            // Panicking isn't enough because that would allow the `waiter` to
+            // be used after it's freed.
+            abort();
         };
 
         unsafe {
@@ -522,7 +527,8 @@ impl<I, O> Drop for WaitInner<'_, '_, I, O> {
     }
 }
 
-/// Error returned by [`Borrowed::wake_one`], caused by when there are no waiters in the list.
+/// Error returned by [`Borrowed::wake_one`], caused by when there are no
+/// waiters in the list.
 #[non_exhaustive]
 #[derive(Debug)]
 pub struct WakeOneError<O> {
@@ -550,6 +556,8 @@ impl Future for CloneWaker {
 
 #[cfg(test)]
 mod tests {
+    use alloc::boxed::Box;
+
     use std::future::Future;
     use std::task::Poll;
 

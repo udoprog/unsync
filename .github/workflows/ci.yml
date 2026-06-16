@@ -17,8 +17,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - uses: dtolnay/rust-toolchain@1.58
+    - uses: dtolnay/rust-toolchain@1.85
     - run: cargo build --workspace --lib
+
+  no_default_features:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - run: cargo build --lib --no-default-features
+
+  features:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - alloc
+          - std
+          - alloc,std
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - run: cargo build --lib --no-default-features --features ${{ matrix.features }}
 
   test:
     runs-on: ubuntu-latest
