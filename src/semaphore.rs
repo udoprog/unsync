@@ -288,7 +288,15 @@ impl Semaphore {
             }
 
             match self.waiters.wait(to_acquire).await {
-                WakeUp::Unfair => continue,
+                WakeUp::Unfair => {
+                    // We were woken from the head of the queue, so take the
+                    // permits without deferring to waiters still queued behind
+                    // us. Plain `try_acquire` would refuse here because the queue
+                    // is non-empty, leaving the released permits unclaimed.
+                    if let Some(guard) = self.try_acquire_unfair(to_acquire) {
+                        break guard;
+                    }
+                }
                 WakeUp::Fair(grant) => {
                     // The `Permit` below owns these permits now; forget the grant
                     // so they aren't released twice.
@@ -561,5 +569,23 @@ mod tests {
         // `f1`'s reserved permit must flow to `f2`.
         drop(f1);
         assert!(f2.as_mut().poll(cx).is_ready());
+    }
+
+    // Releasing one permit while two tasks wait must let the first waiter take
+    // it. The just-woken front waiter must not defer to the task queued behind
+    // it (which would leave both parked and the permit unclaimed).
+    #[test]
+    fn release_wakes_front_waiter_with_another_queued() {
+        let cx = &mut noop_cx();
+        let sem = Semaphore::new(1);
+        let initial = sem.try_acquire(1).unwrap();
+
+        let mut f1 = Box::pin(sem.acquire(1));
+        let mut f2 = Box::pin(sem.acquire(1));
+        assert!(f1.as_mut().poll(cx).is_pending());
+        assert!(f2.as_mut().poll(cx).is_pending());
+
+        drop(initial);
+        assert!(f1.as_mut().poll(cx).is_ready());
     }
 }
