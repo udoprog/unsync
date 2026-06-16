@@ -262,6 +262,11 @@ impl<T> Future for Recv<'_, T> {
             let (inner, both_present) = this.inner.get_mut_unchecked();
 
             if let Some(value) = inner.buf.pop_front() {
+                // Popping freed capacity, so wake a sender waiting to send.
+                if let Some(tx) = &inner.tx {
+                    tx.wake_by_ref();
+                }
+
                 return Poll::Ready(Some(value));
             }
 
@@ -349,9 +354,10 @@ mod tests {
     use std::future::Future;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
-    use std::task::{Context, Wake, Waker};
+    use std::task::{Context, Poll, Wake, Waker};
 
     use super::channel;
+    use crate::utils::noop_cx;
 
     struct Flag(AtomicBool);
 
@@ -382,5 +388,26 @@ mod tests {
         tx.try_send(1).unwrap();
 
         assert!(second.0.load(Ordering::SeqCst), "latest waker was not woken");
+    }
+
+    // A sender blocked on a full channel must be woken when the receiver pops a
+    // value (freeing capacity), not only the next time it finds the queue empty.
+    #[test]
+    fn recv_wakes_blocked_sender_on_pop() {
+        let (mut tx, mut rx) = channel::<u32>(1);
+        tx.try_send(1).unwrap();
+
+        let sender = Arc::new(Flag(AtomicBool::new(false)));
+        let ws = Waker::from(sender.clone());
+
+        // The channel is full, so this send parks and registers `ws`.
+        let mut send = Box::pin(tx.send(2));
+        assert!(send.as_mut().poll(&mut Context::from_waker(&ws)).is_pending());
+
+        // Popping a value frees capacity and must wake the parked sender.
+        let mut recv = Box::pin(rx.recv());
+        assert_eq!(recv.as_mut().poll(&mut noop_cx()), Poll::Ready(Some(1)));
+
+        assert!(sender.0.load(Ordering::SeqCst), "blocked sender was not woken");
     }
 }
