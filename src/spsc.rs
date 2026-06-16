@@ -270,7 +270,7 @@ impl<T> Future for Recv<'_, T> {
                 return Poll::Ready(None);
             }
 
-            if !matches!(&inner.rx, Some(w) if !w.will_wake(cx.waker())) {
+            if !matches!(&inner.rx, Some(w) if w.will_wake(cx.waker())) {
                 inner.rx = Some(cx.waker().clone())
             }
 
@@ -342,4 +342,45 @@ pub fn unbounded<T>() -> (Sender<T>, Receiver<T>) {
     let tx = Sender { inner: b };
 
     (tx, rx)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::task::{Context, Wake, Waker};
+
+    use super::channel;
+
+    struct Flag(AtomicBool);
+
+    impl Wake for Flag {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    // A `recv` re-polled with a new waker (e.g. moved between tasks) must register
+    // it. Otherwise a later send wakes the old waker and the receiver never runs.
+    #[test]
+    fn recv_updates_changed_waker() {
+        let (mut tx, mut rx) = channel::<u32>(1);
+
+        let first = Arc::new(Flag(AtomicBool::new(false)));
+        let second = Arc::new(Flag(AtomicBool::new(false)));
+        let w1 = Waker::from(first.clone());
+        let w2 = Waker::from(second.clone());
+
+        let mut fut = Box::pin(rx.recv());
+        assert!(fut.as_mut().poll(&mut Context::from_waker(&w1)).is_pending());
+        assert!(fut.as_mut().poll(&mut Context::from_waker(&w2)).is_pending());
+
+        tx.try_send(1).unwrap();
+
+        assert!(second.0.load(Ordering::SeqCst), "latest waker was not woken");
+    }
 }
